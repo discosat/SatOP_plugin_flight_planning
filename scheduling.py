@@ -110,13 +110,13 @@ class Scheduling(Plugin):
         """
         Send the compiled plan to the GS client
         """
-        gs = self.gs_connector.registered_groundstations.get(gs_id)
-        if gs_id is None:
+        gs = self.gs_connector.registered_groundstations.get(UUID(gs_id))
+        if gs is None:
             logger.error(f"GS with id '{gs_id}' not found")
             return "GS not found"
         
         # Send the compiled plan to the GS client
-        return await gs.send_control(gs_id, compiled_plan)
+        return await self.gs_connector.send_control(gs_id, compiled_plan)
 
 
     
