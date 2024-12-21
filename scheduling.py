@@ -1,9 +1,12 @@
-import dataclasses
+import io
 import os
 from fastapi import APIRouter, Depends, Request
 import logging
 
+import sqlalchemy
+
 from satop_platform.plugin_engine.plugin import Plugin
+from satop_platform.components.groundstation.connector import GroundstationConnector, GroundstationRegistrationItem
 
 import uuid
 from uuid import UUID
@@ -25,27 +28,36 @@ class Scheduling(Plugin):
         @self.api_router.post('/compile', status_code=201, dependencies=[Depends(self.platform_auth.require_login)])
         async def new_flihtplan_schedule(flight_plan:dict):
 
+            # flight_plan_as_bytes = io.BytesIO(str(flight_plan).encode('utf-8'))
+            # try:
+            #     artifact_in_id = self.sys_log.create_artifact(flight_plan_as_bytes, filename='flight_plan.json').sha1
+            #     logger.info(f"Received new flight plan with artifact ID: {artifact_in_id}")
+            # except sqlalchemy.exc.IntegrityError as e: 
+            #     # Artifact already exists
+            #     artifact_in_id = e.params[0]
+            #     logger.info(f"Received existing flight plan with artifact ID: {artifact_in_id}")
+
             # self.flight_plans_missing_approval.append({"flight_plan": flight_plan, "uuid": uuid.uuid4()})
             this_uuid = uuid.uuid4()
             logger.warning(f"Flight plan scheduled for approval, id: {this_uuid}")
             self.flight_plans_missing_approval[this_uuid] = flight_plan
 
-            return {"message": f"Flight plan scheduled for approval, id: {this_uuid}"}
+            return {"message": f"Flight plan scheduled for approval", "fp_id": f"{this_uuid}"}
 
 
-            # Receives flight plan and date and time via this POST
+            # Receives flight plan and datetime via this POST
             # compiled_plan, artifact_id = await self.call_function("Compiler","compile", flight_plan["flight_plan"], request)
-            # self.flight_plans_missing_approval.append({"artifact_id": artifact_id, "date": flight_plan["date"], "time": flight_plan["time"]})
+            # self.flight_plans_missing_approval.append({"artifact_id": artifact_id, "datetime": flight_plan["datetime"]})
 
 
             # logger.debug(f"sending compiled plan to GS: \n{compiled_plan}")
-            # logger.debug(f"flight plan scheduled for {flight_plan['date']} at {flight_plan['time']}")
+            # logger.debug(f"flight plan scheduled for {flight_plan['datetime']}")
 
             # return {"message": f"Flight plan scheduled for approval, id: {this_uuid}"}
 
 
         @self.api_router.post('/approve/{uuid}', status_code=201, dependencies=[Depends(self.platform_auth.require_login)])
-        async def approve_flight_plan(fp_uuid:str, approved:bool, request: Request):
+        async def approve_flight_plan(fp_uuid:str, approved:bool, request: Request): # TODO: maybe require the GS id here instead.
 
             # logger.debug(f"List of flight plans missing approval: {self.flight_plans_missing_approval}")
             
@@ -76,6 +88,9 @@ class Scheduling(Plugin):
                 f"Flight plan: {compiled_plan}"
             }
 
+            gs_rtn_msg = await self.send_to_gs(artifact_id, compiled_plan, flight_plan_with_datetime["gs_id"], flight_plan_with_datetime["datetime"])
+            logger.debug(f"GS response: {gs_rtn_msg}")
+
             return {"message": message}
 
 
@@ -91,21 +106,24 @@ class Scheduling(Plugin):
     #         response.raise_for_status()
     #         return response.json()
             
-    # def test_function(request: Request, path_parameter: path_param):
+    async def send_to_gs(self, artifact_id:str, compiled_plan:dict, gs_id:str, datetime:str):
+        """
+        Send the compiled plan to the GS client
+        """
 
-    #     request_example = {"test" : "in"}
-    #     host = request.client.host
-    #     data_source_id = path_parameter.id
-
-    #     get_test_url= f"http://{host}/test/{id}/"
-    #     get_inp_url = f"http://{host}/test/{id}/inp"
-
-    #     test_get_response = requests.get(get_test_url)
-    #     inp_post_response = requests.post(get_inp_url , json=request_example)
-    #     if inp_post_response .status_code == 200:
-    #         print(json.loads(test_get_response.content.decode('utf-8')))
-
+        if gs_id not in self.gs_connector.registered_groundstations:
+            logger.error(f"GS with id '{gs_id}' not found")
+            return "GS not found"
         
+        gs = self.gs_connector.registered_groundstations[gs_id]
+        if not gs:
+            logger.error(f"GS with id '{gs_id}' doesn't have instance???")
+            return "No GS instance found"
+        
+        # Send the compiled plan to the GS client
+        return await gs.send_control(gs_id, compiled_plan)
+
+
     
     def startup(self):
         super().startup()
