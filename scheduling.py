@@ -4,7 +4,6 @@ from fastapi import APIRouter, Depends, Request
 import logging
 
 from satop_platform.plugin_engine.plugin import Plugin
-# from satop_platform.components.groundstation.connector import GroundStationConnector
 
 import uuid
 from uuid import UUID
@@ -48,7 +47,7 @@ class Scheduling(Plugin):
         @self.api_router.post('/approve/{uuid}', status_code=201, dependencies=[Depends(self.platform_auth.require_login)])
         async def approve_flight_plan(fp_uuid:str, approved:bool, request: Request):
 
-            logger.debug(f"List of flight plans missing approval: {self.flight_plans_missing_approval}")
+            # logger.debug(f"List of flight plans missing approval: {self.flight_plans_missing_approval}")
             
             if not approved:
                 logger.debug(f"Flight plan with uuid '{fp_uuid}' was not approved by user: {request.state.userid}")
