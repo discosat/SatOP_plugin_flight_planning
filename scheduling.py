@@ -5,6 +5,7 @@ import logging
 
 import sqlalchemy
 
+from satop_platform.components.syslog import models
 from satop_platform.plugin_engine.plugin import Plugin
 from satop_platform.components.groundstation.connector import GroundstationConnector, GroundstationRegistrationItem
 
@@ -26,70 +27,106 @@ class Scheduling(Plugin):
         self.flight_plans_missing_approval: dict[UUID, dict] = dict()
 
         @self.api_router.post('/compile', status_code=201, dependencies=[Depends(self.platform_auth.require_login)])
-        async def new_flihtplan_schedule(flight_plan:dict):
+        async def new_flihtplan_schedule(flight_plan:dict, req: Request):
 
-            # flight_plan_as_bytes = io.BytesIO(str(flight_plan).encode('utf-8'))
-            # try:
-            #     artifact_in_id = self.sys_log.create_artifact(flight_plan_as_bytes, filename='flight_plan.json').sha1
-            #     logger.info(f"Received new flight plan with artifact ID: {artifact_in_id}")
-            # except sqlalchemy.exc.IntegrityError as e: 
-            #     # Artifact already exists
-            #     artifact_in_id = e.params[0]
-            #     logger.info(f"Received existing flight plan with artifact ID: {artifact_in_id}")
+            # LOGGING: User saves flight plan - user action and flight plan artifact
 
-            # self.flight_plans_missing_approval.append({"flight_plan": flight_plan, "uuid": uuid.uuid4()})
-            this_uuid = uuid.uuid4()
-            logger.warning(f"Flight plan scheduled for approval, id: {this_uuid}")
-            self.flight_plans_missing_approval[this_uuid] = flight_plan
+            flight_plan_as_bytes = io.BytesIO(str(flight_plan).encode('utf-8'))
+            try:
+                artifact_in_id = self.sys_log.create_artifact(flight_plan_as_bytes, filename='detailed_flight_plan.json').sha1
+                logger.info(f"Received new detailed flight plan with artifact ID: {artifact_in_id}, scheduled for approval")
+            except sqlalchemy.exc.IntegrityError as e: 
+                # Artifact already exists
+                artifact_in_id = e.params[0]
+                logger.info(f"Received existing detailed flight plan with artifact ID: {artifact_in_id}")
 
-            return {"message": f"Flight plan scheduled for approval", "fp_id": f"{this_uuid}"}
+            # -- actual scheduling --
+            
+            flight_plan_uuid = uuid.uuid4()
+            logger.warning(f"Flight plan scheduled for approval, id: {flight_plan_uuid}")
+            self.flight_plans_missing_approval[flight_plan_uuid] = flight_plan
+            
+            # -- end of scheduling --
 
+            self.sys_log.log_event(models.Event(
+                descriptor='FlightplanSaveEvent',
+                relationships=[
+                    models.EventObjectRelationship(
+                        predicate=models.Predicate(descriptor='startedBy'),
+                        object=models.Entity(type=models.EntityType.user, id=req.state.userid)
+                        ),
+                    models.EventObjectRelationship(
+                        predicate=models.Predicate(descriptor='created'),
+                        object=models.Artifact(sha1=artifact_in_id)
+                        )
+                    ]
+                )
+            )
 
-            # Receives flight plan and datetime via this POST
-            # compiled_plan, artifact_id = await self.call_function("Compiler","compile", flight_plan["flight_plan"], request)
-            # self.flight_plans_missing_approval.append({"artifact_id": artifact_id, "datetime": flight_plan["datetime"]})
+            logger.info(f"Flight plan scheduled for approval; flight plan id: {flight_plan_uuid}")
 
-
-            # logger.debug(f"sending compiled plan to GS: \n{compiled_plan}")
-            # logger.debug(f"flight plan scheduled for {flight_plan['datetime']}")
-
-            # return {"message": f"Flight plan scheduled for approval, id: {this_uuid}"}
+            return {
+                "message": f"Flight plan scheduled for approval", 
+                "fp_id": f"{flight_plan_uuid}"
+            }
 
 
         @self.api_router.post('/approve/{uuid}', status_code=201, dependencies=[Depends(self.platform_auth.require_login)])
-        async def approve_flight_plan(fp_uuid:str, approved:bool, request: Request): # TODO: maybe require the GS id here instead.
-
-            # logger.debug(f"List of flight plans missing approval: {self.flight_plans_missing_approval}")
+        async def approve_flight_plan(flight_plan_uuid:str, approved:bool, request: Request): # TODO: maybe require the GS id here instead.
+            
+            # LOGGING: User approves flight plan - user action and flight plan artifact, compiled flight plan artifact, GS id
+            user_id = request.state.userid
+            flight_plan_uuid = UUID(flight_plan_uuid)
+            flight_plan_gs_id = UUID(flight_plan_with_datetime["gs_id"])
             
             if not approved:
-                logger.debug(f"Flight plan with uuid '{fp_uuid}' was not approved by user: {request.state.userid}")
+                logger.debug(f"Flight plan with uuid '{flight_plan_uuid}' was not approved by user: {user_id}")
                 return {"message": "Flight plan not approved by user"}
-            logger.debug(f"Flight plan with uuid '{fp_uuid}' was approved by user: {request.state.userid}")
+            logger.debug(f"Flight plan with uuid '{flight_plan_uuid}' was approved by user: {user_id}")
 
-            flight_plan_with_datetime = self.flight_plans_missing_approval.get(UUID(fp_uuid))
+            flight_plan_with_datetime = self.flight_plans_missing_approval.get(flight_plan_uuid)
             if flight_plan_with_datetime is None:
-                logger.debug(f"Flight plan with uuid '{fp_uuid}' not found")
+                logger.debug(f"Flight plan with uuid '{flight_plan_uuid}' was requested by user '{user_id}' but was not found")
                 return {"message": "Flight plan not found"}
             
             logger.debug(f"found flight plan: {flight_plan_with_datetime}")
 
             # Compile the flight plan
             # TODO: compile in seperate thread
-            compiled_plan, artifact_id = await self.call_function("Compiler","compile", flight_plan_with_datetime["flight_plan"], fp_uuid)
+            compiled_plan, artifact_id = await self.call_function("Compiler","compile", flight_plan_with_datetime["flight_plan"], user_id)
             
 
             # Send the compiled plan to the GS client
-            # TODO: send flight plan with datetime to GS
             logger.debug(f"\nsending compiled plan to GS: \n{compiled_plan}\n")
-            self.flight_plans_missing_approval.pop(UUID(fp_uuid))
+            self.flight_plans_missing_approval.pop(flight_plan_uuid)
+
+            gs_rtn_msg = await self.send_to_gs(artifact_id, compiled_plan, flight_plan_gs_id, flight_plan_with_datetime["datetime"])
+            logger.debug(f"GS response: {gs_rtn_msg}")
+
+
+            self.sys_log.log_event(models.Event(
+                descriptor='ApprovedForSendOffEvent',
+                relationships=[
+                    models.EventObjectRelationship(
+                        predicate=models.Predicate(descriptor='sentBy'),
+                        object=models.Entity(type=models.EntityType.user, id=user_id)
+                        ),
+                    models.EventObjectRelationship(
+                        predicate=models.Predicate(descriptor='used'),
+                        object=models.Artifact(sha1=artifact_id)
+                        ),
+                    models.EventObjectRelationship(
+                        predicate=models.Predicate(descriptor='setTo'),
+                        object=models.Artifact(sha1=flight_plan_gs_id)
+                        )
+                    ]
+                )
+            )
 
             message = {
                 "Flight plan approved and sent to GS",
                 f"Flight plan: {compiled_plan}"
             }
-
-            gs_rtn_msg = await self.send_to_gs(artifact_id, compiled_plan, UUID(flight_plan_with_datetime["gs_id"]), flight_plan_with_datetime["datetime"])
-            logger.debug(f"GS response: {gs_rtn_msg}")
 
             return {"message": message}
 
