@@ -88,7 +88,7 @@ class Scheduling(Plugin):
                 f"Flight plan: {compiled_plan}"
             }
 
-            gs_rtn_msg = await self.send_to_gs(artifact_id, compiled_plan, flight_plan_with_datetime["gs_id"], flight_plan_with_datetime["datetime"])
+            gs_rtn_msg = await self.send_to_gs(artifact_id, compiled_plan, UUID(flight_plan_with_datetime["gs_id"]), flight_plan_with_datetime["datetime"])
             logger.debug(f"GS response: {gs_rtn_msg}")
 
             return {"message": message}
@@ -106,17 +106,17 @@ class Scheduling(Plugin):
     #         response.raise_for_status()
     #         return response.json()
             
-    async def send_to_gs(self, artifact_id:str, compiled_plan:dict, gs_id:str, datetime:str):
+    async def send_to_gs(self, artifact_id:str, compiled_plan:dict, gs_id:UUID, datetime:str):
         """
         Send the compiled plan to the GS client
         """
         gs = self.gs_connector.registered_groundstations.get(gs_id)
-        if gs_id is None:
+        if gs is None:
             logger.error(f"GS with id '{gs_id}' not found")
             return "GS not found"
         
         # Send the compiled plan to the GS client
-        return await gs.send_control(gs_id, compiled_plan)
+        return await self.gs_connector.send_control(gs_id, compiled_plan)
 
 
     
