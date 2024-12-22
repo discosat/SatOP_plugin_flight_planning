@@ -1,6 +1,6 @@
 import io
 import os
-from fastapi import APIRouter, Depends, Request
+from fastapi import APIRouter, Depends, Request, HTTPException, status
 import logging
 
 import sqlalchemy
@@ -73,10 +73,14 @@ class Scheduling(Plugin):
 
         @self.api_router.post('/approve/{uuid}', status_code=201, dependencies=[Depends(self.platform_auth.require_login)])
         async def approve_flight_plan(flight_plan_uuid:str, approved:bool, request: Request): # TODO: maybe require the GS id here instead.
-            
-            # LOGGING: User approves flight plan - user action and flight plan artifact, compiled flight plan artifact, GS id
             user_id = request.state.userid
             flight_plan_uuid = UUID(flight_plan_uuid)
+            flight_plan_with_datetime = self.flight_plans_missing_approval.get(flight_plan_uuid)
+            if flight_plan_with_datetime is None:
+                logger.debug(f"Flight plan with uuid '{flight_plan_uuid}' was requested by user '{user_id}' but was not found")
+                raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail='Flight plan not found')
+            
+            # LOGGING: User approves flight plan - user action and flight plan artifact, compiled flight plan artifact, GS id
             flight_plan_gs_id = UUID(flight_plan_with_datetime["gs_id"])
             
             if not approved:
@@ -84,10 +88,6 @@ class Scheduling(Plugin):
                 return {"message": "Flight plan not approved by user"}
             logger.debug(f"Flight plan with uuid '{flight_plan_uuid}' was approved by user: {user_id}")
 
-            flight_plan_with_datetime = self.flight_plans_missing_approval.get(flight_plan_uuid)
-            if flight_plan_with_datetime is None:
-                logger.debug(f"Flight plan with uuid '{flight_plan_uuid}' was requested by user '{user_id}' but was not found")
-                return {"message": "Flight plan not found"}
             
             logger.debug(f"found flight plan: {flight_plan_with_datetime}")
 
@@ -123,7 +123,7 @@ class Scheduling(Plugin):
                         ),
                     models.EventObjectRelationship(
                         predicate=models.Predicate(descriptor='sentTo'),
-                        object=models.Artifact(sha1=flight_plan_gs_id)
+                        object=models.Entity(type='system',id=str(flight_plan_gs_id))
                         )
                     ]
                 )
