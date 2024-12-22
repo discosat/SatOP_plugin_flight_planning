@@ -129,19 +129,7 @@ class Scheduling(Plugin):
             }
 
             return {"message": message}
-
-
-    # async def get_compiled_plan(self, artifact_id:str):
-    #     # get the compiled plan from the database using fast api call
-    #     """
-    #     using call http://127.0.0.1:7889/api/log/artifacts/:hash were hash is the artifact_id
-    #     """ 
-    #     # async def get_compiled_plan(self, artifact_id: str):
-    #     url = f"http://127.0.0.1:7889/api/log/artifacts/{artifact_id}"
-    #     async with httpx.AsyncClient() as client:
-    #         response = await client.get(url)
-    #         response.raise_for_status()
-    #         return response.json()
+        
             
     async def send_to_gs(self, artifact_id:str, compiled_plan:dict, gs_id:UUID, datetime:str):
         """
