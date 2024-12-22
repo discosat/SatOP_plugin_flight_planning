@@ -6,7 +6,7 @@ import logging
 import sqlalchemy
 
 from satop_platform.plugin_engine.plugin import Plugin
-from satop_platform.components.groundstation.connector import GroundstationConnector, GroundstationRegistrationItem
+from satop_platform.components.groundstation.connector import GroundstationConnector, GroundstationRegistrationItem, FramedContent
 
 import uuid
 from uuid import UUID
@@ -88,7 +88,13 @@ class Scheduling(Plugin):
                 f"Flight plan: {compiled_plan}"
             }
 
-            gs_rtn_msg = await self.send_to_gs(artifact_id, compiled_plan, UUID(flight_plan_with_datetime["gs_id"]), flight_plan_with_datetime["datetime"])
+            gs_rtn_msg = await self.send_to_gs(
+                artifact_id, 
+                compiled_plan, 
+                UUID(flight_plan_with_datetime["gs_id"]), 
+                flight_plan_with_datetime["datetime"],
+                flight_plan_with_datetime["sat_name"]
+                )
             logger.debug(f"GS response: {gs_rtn_msg}")
 
             return {"message": message}
@@ -106,7 +112,7 @@ class Scheduling(Plugin):
     #         response.raise_for_status()
     #         return response.json()
             
-    async def send_to_gs(self, artifact_id:str, compiled_plan:dict, gs_id:UUID, datetime:str):
+    async def send_to_gs(self, artifact_id:str, compiled_plan:dict, gs_id:UUID, datetime:str, satellite:str):
         """
         Send the compiled plan to the GS client
         """
@@ -116,7 +122,20 @@ class Scheduling(Plugin):
             return "GS not found"
         
         # Send the compiled plan to the GS client
-        return await self.gs_connector.send_control(gs_id, compiled_plan)
+        frame = FramedContent(
+            header_data={
+                'type' : 'schedule_transmission',
+                'data' : {
+                    'time' : datetime,
+                    'satellite': satellite
+                }
+            },
+            frames = [
+                compiled_plan
+            ]
+        )
+
+        return await self.gs_connector.send_control(gs_id, frame)
 
 
     
