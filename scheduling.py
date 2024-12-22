@@ -26,7 +26,7 @@ class Scheduling(Plugin):
         self.api_router = APIRouter()
         self.flight_plans_missing_approval: dict[UUID, dict] = dict()
 
-        @self.api_router.post('/compile', status_code=201, dependencies=[Depends(self.platform_auth.require_login)])
+        @self.api_router.post('/save', status_code=201, dependencies=[Depends(self.platform_auth.require_login)])
         async def new_flihtplan_schedule(flight_plan:dict, req: Request):
 
             # LOGGING: User saves flight plan - user action and flight plan artifact
