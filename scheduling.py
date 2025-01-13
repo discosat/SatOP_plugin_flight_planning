@@ -1,6 +1,6 @@
 import io
 import os
-from fastapi import APIRouter, Depends, Request, HTTPException, status
+from fastapi import APIRouter, Depends, Request, HTTPException, status, BackgroundTasks
 import logging
 
 import sqlalchemy
@@ -71,8 +71,8 @@ class Scheduling(Plugin):
             }
 
 
-        @self.api_router.post('/approve/{uuid}', status_code=201, dependencies=[Depends(self.platform_auth.require_login)])
-        async def approve_flight_plan(flight_plan_uuid:str, approved:bool, request: Request): # TODO: maybe require the GS id here instead.
+        @self.api_router.post('/approve/{uuid}', status_code=202, dependencies=[Depends(self.platform_auth.require_login)])
+        async def approve_flight_plan(flight_plan_uuid:str, approved:bool, request: Request, background_tasks: BackgroundTasks): # TODO: maybe require the GS id here instead.
             user_id = request.state.userid
             flight_plan_uuid = UUID(flight_plan_uuid)
             flight_plan_with_datetime = self.flight_plans_missing_approval.get(flight_plan_uuid)
@@ -95,47 +95,44 @@ class Scheduling(Plugin):
             # TODO: compile in seperate thread
             compiled_plan, artifact_id = await self.call_function("Compiler","compile", flight_plan_with_datetime["flight_plan"], user_id)
             
+            background_tasks.add_task(self._do_send_to_gs, flight_plan_uuid, compiled_plan, artifact_id, user_id)
 
-            # Send the compiled plan to the GS client
-            logger.debug(f"\nsending compiled plan to GS: \n{compiled_plan}\n")
-            self.flight_plans_missing_approval.pop(flight_plan_uuid)
+            return {"message": "Flight plan approved and scheduled for transmission to ground station."}
 
-            gs_rtn_msg = await self.send_to_gs(
-                            artifact_id, 
-                            compiled_plan, 
-                            flight_plan_gs_id, 
-                            flight_plan_with_datetime["datetime"],
-                            flight_plan_with_datetime["sat_name"]
-                        )           
-            logger.debug(f"GS response: {gs_rtn_msg}")
+    async def _do_send_to_gs(self, flight_plan_uuid, compiled_plan, artifact_id, user_id):
+        # Send the compiled plan to the GS client
+        logger.debug(f"\nsending compiled plan to GS: \n{compiled_plan}\n")
+        flight_plan_with_datetime = self.flight_plans_missing_approval.pop(flight_plan_uuid)
+        flight_plan_gs_id = UUID(flight_plan_with_datetime["gs_id"])
+
+        gs_rtn_msg = await self.send_to_gs(
+                        artifact_id, 
+                        compiled_plan, 
+                        flight_plan_gs_id, 
+                        flight_plan_with_datetime["datetime"],
+                        flight_plan_with_datetime["sat_name"]
+                    )           
+        logger.debug(f"GS response: {gs_rtn_msg}")
 
 
-            self.sys_log.log_event(models.Event(
-                descriptor='ApprovedForSendOffEvent',
-                relationships=[
-                    models.EventObjectRelationship(
-                        predicate=models.Predicate(descriptor='sentBy'),
-                        object=models.Entity(type=models.EntityType.user, id=user_id)
-                        ),
-                    models.EventObjectRelationship(
-                        predicate=models.Predicate(descriptor='used'),
-                        object=models.Artifact(sha1=artifact_id)
-                        ),
-                    models.EventObjectRelationship(
-                        predicate=models.Predicate(descriptor='sentTo'),
-                        object=models.Entity(type='system',id=str(flight_plan_gs_id))
-                        )
-                    ]
-                )
+        self.sys_log.log_event(models.Event(
+            descriptor='ApprovedForSendOffEvent',
+            relationships=[
+                models.EventObjectRelationship(
+                    predicate=models.Predicate(descriptor='sentBy'),
+                    object=models.Entity(type=models.EntityType.user, id=user_id)
+                    ),
+                models.EventObjectRelationship(
+                    predicate=models.Predicate(descriptor='used'),
+                    object=models.Artifact(sha1=artifact_id)
+                    ),
+                models.EventObjectRelationship(
+                    predicate=models.Predicate(descriptor='sentTo'),
+                    object=models.Entity(type='system',id=str(flight_plan_gs_id))
+                    )
+                ]
             )
-
-            message = {
-                "Flight plan approved and sent to GS",
-                f"Flight plan: {compiled_plan}"
-            }
-
-            return {"message": message}
-        
+        )
             
     async def send_to_gs(self, artifact_id:str, compiled_plan:dict, gs_id:UUID, datetime:str, satellite:str):
         """
