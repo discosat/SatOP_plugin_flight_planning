@@ -28,6 +28,19 @@ class Scheduling(Plugin):
 
         @self.api_router.post('/save', status_code=201, dependencies=[Depends(self.platform_auth.require_login)])
         async def new_flihtplan_schedule(flight_plan:dict, req: Request):
+            user_id = req.state.userid
+
+            if not flight_plan.get("sat_name") or flight_plan["sat_name"] == "":
+                logger.info(f"User '{user_id}' sent flightplan for approval but rejected due to: FLIGHTPLAN - MISSING REFERENCE TO SATELLITE")
+                return "Rejected, Missing Satellite reference"
+            
+            if not flight_plan.get("datetime") or flight_plan["datetime"] == "":
+                logger.info(f"User '{user_id}' sent flightplan for approval but rejected due to: FLIGHTPLAN - MISSING DATETIME")
+                return "Rejected, Missing datetime"
+            
+            if not flight_plan.get("gs_id") or flight_plan["gs_id"] == "":
+                logger.info(f"User '{user_id}' sent flightplan for approval but rejected due to: FLIGHTPLAN - MISSING REFERENCE TO GS ID")
+                return "Rejected, Missing GS ID"
 
             # LOGGING: User saves flight plan - user action and flight plan artifact
 
