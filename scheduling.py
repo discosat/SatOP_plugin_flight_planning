@@ -158,13 +158,13 @@ class Scheduling(Plugin):
             """
             user_id = request.state.userid
             flight_plan_uuid = UUID(flight_plan_uuid)
-            flight_plan_with_datetime = self.flight_plans_missing_approval.get(flight_plan_uuid)
+            flight_plan_with_datetime:FlightPlan = self.flight_plans_missing_approval.get(flight_plan_uuid)
             if flight_plan_with_datetime is None:
                 logger.debug(f"Flight plan with uuid '{flight_plan_uuid}' was requested by user '{user_id}' but was not found")
                 raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail='Flight plan not found')
             
             # LOGGING: User approves flight plan - user action and flight plan artifact, compiled flight plan artifact, GS id
-            flight_plan_gs_id = UUID(flight_plan_with_datetime["gs_id"])
+            flight_plan_gs_id = UUID(flight_plan_with_datetime.gs_id)
             
             if not approved:
                 logger.debug(f"Flight plan with uuid '{flight_plan_uuid}' was not approved by user: {user_id}")
@@ -176,7 +176,7 @@ class Scheduling(Plugin):
 
             # Compile the flight plan
             # TODO: compile in seperate thread
-            compiled_plan, artifact_id = await self.call_function("Compiler","compile", flight_plan_with_datetime["flight_plan"], user_id)
+            compiled_plan, artifact_id = await self.call_function("Compiler","compile", flight_plan_with_datetime.flight_plan, user_id)
             
             background_tasks.add_task(self._do_send_to_gs, flight_plan_uuid, compiled_plan, artifact_id, user_id)
 
@@ -193,15 +193,15 @@ class Scheduling(Plugin):
         """
         # Send the compiled plan to the GS client
         logger.debug(f"\nsending compiled plan to GS: \n{compiled_plan}\n")
-        flight_plan_with_datetime = self.flight_plans_missing_approval.pop(flight_plan_uuid)
-        flight_plan_gs_id = UUID(flight_plan_with_datetime["gs_id"])
+        flight_plan_with_datetime:FlightPlan = self.flight_plans_missing_approval.pop(flight_plan_uuid)
+        flight_plan_gs_id = UUID(flight_plan_with_datetime.gs_id)
 
         gs_rtn_msg = await self.send_to_gs(
                         artifact_id, 
                         compiled_plan, 
                         flight_plan_gs_id, 
-                        flight_plan_with_datetime["datetime"],
-                        flight_plan_with_datetime["sat_name"]
+                        flight_plan_with_datetime.datetime,
+                        flight_plan_with_datetime.sat_name
                     )           
         logger.debug(f"GS response: {gs_rtn_msg}")
 
