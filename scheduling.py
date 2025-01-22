@@ -83,7 +83,7 @@ class Scheduling(Plugin):
                 flight_plan (dict): Expects a JSON object with the flight plan.
 
             Returns:
-                (str) or (dict): A message indicating the result of the scheduling or a dictionary with the message and the flight plan ID.
+                (str) or (list(str, UUID)): A message indicating the result of the scheduling or a dictionary with the message and the flight plan ID.
             """
             user_id = req.state.userid
 
@@ -154,8 +154,7 @@ class Scheduling(Plugin):
                 HTTPException: If the flight plan is not found
 
             Returns:
-                (dict): A dictionary with a:
-                    message (str): A message indicating the result of the approval
+                (str) or (list(str)): An exception message or a message indicating the result of the approval
             """
             user_id = request.state.userid
             flight_plan_uuid = UUID(flight_plan_uuid)
