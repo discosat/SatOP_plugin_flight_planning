@@ -1,5 +1,6 @@
 import io
 import os
+from pydantic import BaseModel
 from fastapi import APIRouter, Depends, Request, HTTPException, status, BackgroundTasks
 import logging
 
@@ -15,6 +16,54 @@ from uuid import UUID
 logger = logging.getLogger('plugin.scheduling')
 
 
+class FlightPlan(BaseModel):
+    flight_plan: dict
+    datetime: str
+    gs_id: str
+    sat_name: str
+    
+    model_config = {
+        "json_schema_extra": {
+            "examples": [
+                {
+                    "flight_plan": 
+                    {
+                        "name": "commands",
+                        "body": [
+                            {
+                                "name": "repeat-n",
+                                "count": 10,
+                                "body": [
+                                    {
+                                        "name": "gpio-write",
+                                        "pin": 16,
+                                        "value": 1
+                                    },
+                                    {
+                                        "name": "wait-sec",
+                                        "duration": 1
+                                    },
+                                    {
+                                        "name": "gpio-write",
+                                        "pin": 16,
+                                        "value": 0
+                                    },
+                                    {
+                                        "name": "wait-sec",
+                                        "duration": 1
+                                    }
+                                ]
+                            }
+                        ]
+                    },
+                    "datetime": "2025-01-01T12:12:30+01:00",
+                    "gs_id": "86c8a92b-571a-46cb-b306-e9be71959279",
+                    "sat_name": "DISCO-2"
+                }
+            ]
+        }
+    }
+
 class Scheduling(Plugin):
     def __init__(self, *args, **kwargs):
         plugin_dir = os.path.dirname(os.path.realpath(__file__))
@@ -27,18 +76,26 @@ class Scheduling(Plugin):
         self.flight_plans_missing_approval: dict[UUID, dict] = dict()
 
         @self.api_router.post('/save', status_code=201, dependencies=[Depends(self.platform_auth.require_login)])
-        async def new_flihtplan_schedule(flight_plan:dict, req: Request):
+        async def new_flihtplan_schedule(flight_plan:FlightPlan, req: Request):
+            """Takes a flight plan and saves it for approval
+
+            Args:
+                flight_plan (dict): Expects a JSON object with the flight plan.
+
+            Returns:
+                (str) or (dict): A message indicating the result of the scheduling or a dictionary with the message and the flight plan ID.
+            """
             user_id = req.state.userid
 
-            if not flight_plan.get("sat_name") or flight_plan["sat_name"] == "":
+            if flight_plan.sat_name is None or flight_plan.sat_name == "":
                 logger.info(f"User '{user_id}' sent flightplan for approval but rejected due to: FLIGHTPLAN - MISSING REFERENCE TO SATELLITE")
                 return "Rejected, Missing Satellite reference"
             
-            if not flight_plan.get("datetime") or flight_plan["datetime"] == "":
+            if flight_plan.datetime is None or flight_plan.datetime == "":
                 logger.info(f"User '{user_id}' sent flightplan for approval but rejected due to: FLIGHTPLAN - MISSING DATETIME")
                 return "Rejected, Missing datetime"
             
-            if not flight_plan.get("gs_id") or flight_plan["gs_id"] == "":
+            if flight_plan.gs_id is None or flight_plan.gs_id == "":
                 logger.info(f"User '{user_id}' sent flightplan for approval but rejected due to: FLIGHTPLAN - MISSING REFERENCE TO GS ID")
                 return "Rejected, Missing GS ID"
 
@@ -78,6 +135,7 @@ class Scheduling(Plugin):
 
             logger.info(f"Flight plan scheduled for approval; flight plan id: {flight_plan_uuid}")
 
+            # TODO: return artiifact flight plan id instead of local "flight_plans_missing_approval" flight plan id.
             return {
                 "message": f"Flight plan scheduled for approval", 
                 "fp_id": f"{flight_plan_uuid}"
@@ -86,6 +144,19 @@ class Scheduling(Plugin):
 
         @self.api_router.post('/approve/{uuid}', status_code=202, dependencies=[Depends(self.platform_auth.require_login)])
         async def approve_flight_plan(flight_plan_uuid:str, approved:bool, request: Request, background_tasks: BackgroundTasks): # TODO: maybe require the GS id here instead.
+            """Approve a flight plan for transmission to a ground station
+
+            Args:
+                flight_plan_uuid (str): Identifier of the flight plan to approve
+                approved (bool): Whether the flight plan is approved or not
+                
+            Raises:
+                HTTPException: If the flight plan is not found
+
+            Returns:
+                (dict): A dictionary with a:
+                    message (str): A message indicating the result of the approval
+            """
             user_id = request.state.userid
             flight_plan_uuid = UUID(flight_plan_uuid)
             flight_plan_with_datetime = self.flight_plans_missing_approval.get(flight_plan_uuid)
@@ -113,6 +184,14 @@ class Scheduling(Plugin):
             return {"message": "Flight plan approved and scheduled for transmission to ground station."}
 
     async def _do_send_to_gs(self, flight_plan_uuid, compiled_plan, artifact_id, user_id):
+        """Send the compiled plan to the GS client
+
+        Args:
+            flight_plan_uuid (UUID): Identifier of the flight plan to approve
+            compiled_plan (dict): The compiled flight plan
+            artifact_id (str): Identifier of the compiled flight plan
+            user_id (str): Identifier of the user who performed this action
+        """
         # Send the compiled plan to the GS client
         logger.debug(f"\nsending compiled plan to GS: \n{compiled_plan}\n")
         flight_plan_with_datetime = self.flight_plans_missing_approval.pop(flight_plan_uuid)
@@ -146,10 +225,20 @@ class Scheduling(Plugin):
                 ]
             )
         )
-            
+    
+    # TODO: If artifact_id is not used, remove it from the function signature
     async def send_to_gs(self, artifact_id:str, compiled_plan:dict, gs_id:UUID, datetime:str, satellite:str):
-        """
-        Send the compiled plan to the GS client
+        """Send the compiled plan to the GS client
+
+        Args:
+            artifact_id (str): Identifier of the compiled flight plan
+            compiled_plan (dict): The compiled flight plan
+            gs_id (UUID): Identifier of the ground station
+            datetime (str): The datetime of the transmission
+            satellite (str): The satellite to which the transmission is scheduled
+
+        Returns:
+            (str): The response from the GS client
         """
         gs = self.gs_connector.registered_groundstations.get(gs_id)
         if gs is None:
@@ -175,9 +264,13 @@ class Scheduling(Plugin):
 
     
     def startup(self):
+        """Startup protocol for the plugin
+        """
         super().startup()
         logger.info(f"Running '{self.name}' statup protocol")
     
     def shutdown(self):
+        """Shutdown protocol for the plugin
+        """
         super().shutdown()
         logger.info(f"'{self.name}' Shutting down gracefully")

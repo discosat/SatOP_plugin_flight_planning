@@ -1,5 +1,5 @@
 name: Scheduling
-requirements: []
+requirements: [pydantic]
 dependencies: [Compiler]
 capabilities: [http.add_routes]
 
