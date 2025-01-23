@@ -9,6 +9,7 @@ import sqlalchemy
 from satop_platform.components.syslog import models
 from satop_platform.plugin_engine.plugin import Plugin
 from satop_platform.components.groundstation.connector import GroundstationConnector, GroundstationRegistrationItem, FramedContent
+from satop_platform.components.restapi import exceptions
 
 import uuid
 from uuid import UUID
@@ -75,16 +76,15 @@ class Scheduling(Plugin):
         self.api_router = APIRouter()
         self.flight_plans_missing_approval: dict[UUID, dict] = dict()
 
-        @self.api_router.post('/save', status_code=201, dependencies=[Depends(self.platform_auth.require_login)])
+        @self.api_router.post(
+                '/save', 
+                summary="Takes a flight plan and saves it for approval.",
+                description="Takes a flight plan and saves it locally for later approval.",
+                response_description="A message indicating the result of the scheduling or a dictionary with the message and the flight plan ID.",
+                status_code=201, 
+                dependencies=[Depends(self.platform_auth.require_login)]
+                )
         async def new_flihtplan_schedule(flight_plan:FlightPlan, req: Request):
-            """Takes a flight plan and saves it for approval
-
-            Args:
-                flight_plan (dict): Expects a JSON object with the flight plan.
-
-            Returns:
-                (str) or (list(str, UUID)): A message indicating the result of the scheduling or a dictionary with the message and the flight plan ID.
-            """
             user_id = req.state.userid
 
             if flight_plan.sat_name is None or flight_plan.sat_name == "":
@@ -142,20 +142,36 @@ class Scheduling(Plugin):
             }
 
 
-        @self.api_router.post('/approve/{uuid}', status_code=202, dependencies=[Depends(self.platform_auth.require_login)])
+        @self.api_router.post(
+                '/approve/{uuid}', 
+                summary="Approve a flight plan for transmission to a ground station",
+                description=
+"""
+Approve or reject a flight plan for transmission to a ground station.
+The flight plan is identified by the UUID provided in the URL.
+
+If the flight plan is rejected, it will not be sent to the ground station and will be removed from the local list of flight plans missing approval.
+
+If the flight plan is approved, a message will first return to the sender acknowledging that the request was received, and then the approved flight plan will be compiled and sent to the ground station.
+""",
+                response_description="A message indicating the result of the approval",
+                responses={**exceptions.NotFound("Flight plan not found").response},
+                status_code=202, 
+                dependencies=[Depends(self.platform_auth.require_login)]
+                )
         async def approve_flight_plan(flight_plan_uuid:str, approved:bool, request: Request, background_tasks: BackgroundTasks): # TODO: maybe require the GS id here instead.
-            """Approve a flight plan for transmission to a ground station
+            # """Approve a flight plan for transmission to a ground station
 
-            Args:
-                flight_plan_uuid (str): Identifier of the flight plan to approve
-                approved (bool): Whether the flight plan is approved or not
+            # Args:
+            #     flight_plan_uuid (str): Identifier of the flight plan to approve
+            #     approved (bool): Whether the flight plan is approved or not
                 
-            Raises:
-                HTTPException: If the flight plan is not found
+            # Raises:
+            #     HTTPException: If the flight plan is not found
 
-            Returns:
-                (str) or (list(str)): An exception message or a message indicating the result of the approval
-            """
+            # Returns:
+            #     (str) or (list(str)): An exception message or a message indicating the result of the approval
+            # """
             user_id = request.state.userid
             flight_plan_uuid = UUID(flight_plan_uuid)
             flight_plan_with_datetime:FlightPlan = self.flight_plans_missing_approval.get(flight_plan_uuid)
