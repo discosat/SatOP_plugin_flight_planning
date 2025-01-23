@@ -16,7 +16,6 @@ from uuid import UUID
 
 logger = logging.getLogger('plugin.scheduling')
 
-
 class FlightPlan(BaseModel):
     flight_plan: dict
     datetime: str
@@ -84,7 +83,7 @@ class Scheduling(Plugin):
                 status_code=201, 
                 dependencies=[Depends(self.platform_auth.require_login)]
                 )
-        async def new_flihtplan_schedule(flight_plan:FlightPlan, req: Request):
+        async def new_flihtplan_schedule(flight_plan:FlightPlan, req: Request) -> dict[str, str] | str:
             user_id = req.state.userid
 
             if flight_plan.sat_name is None or flight_plan.sat_name == "":
@@ -155,11 +154,11 @@ If the flight plan is rejected, it will not be sent to the ground station and wi
 If the flight plan is approved, a message will first return to the sender acknowledging that the request was received, and then the approved flight plan will be compiled and sent to the ground station.
 """,
                 response_description="A message indicating the result of the approval",
-                responses={**exceptions.NotFound("Flight plan not found").response},
+                # responses={**exceptions.NotFound("Flight plan not found").response},
                 status_code=202, 
                 dependencies=[Depends(self.platform_auth.require_login)]
                 )
-        async def approve_flight_plan(flight_plan_uuid:str, approved:bool, request: Request, background_tasks: BackgroundTasks): # TODO: maybe require the GS id here instead.
+        async def approve_flight_plan(flight_plan_uuid:str, approved:bool, request: Request, background_tasks: BackgroundTasks) -> dict[str, str]: # TODO: maybe require the GS id here instead.
             # """Approve a flight plan for transmission to a ground station
 
             # Args:
