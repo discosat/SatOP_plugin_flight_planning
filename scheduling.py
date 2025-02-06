@@ -75,6 +75,9 @@ class Scheduling(Plugin):
         self.api_router = APIRouter()
         self.flight_plans_missing_approval: dict[UUID, dict] = dict()
 
+        self.data_dir = os.path.join(plugin_dir, 'data')
+        os.makedirs(self.data_dir, exist_ok=True)
+
         @self.api_router.post(
                 '/save', 
                 summary="Takes a flight plan and saves it for approval.",
@@ -111,10 +114,19 @@ class Scheduling(Plugin):
 
             # -- actual scheduling --
             
-            flight_plan_uuid = uuid.uuid4()
-            logger.warning(f"Flight plan scheduled for approval, id: {flight_plan_uuid}")
-            self.flight_plans_missing_approval[flight_plan_uuid] = flight_plan
+            # flight_plan_uuid1 = uuid.uuid4()
+            # print(f"flight_plan_uuid1: {flight_plan_uuid1}")
+            # print(f"artifact_in_id: {artifact_in_id}")
+
+            # # flight_plan_uuid = UUID()
+            flight_plan_uuid = artifact_in_id
+            # print(f"flight_plan_uuid: {flight_plan_uuid}")
+            # print(f"flight_plan_id == artifact_in_id: {flight_plan_uuid == flight_plan_uuid}")
             
+            # Save flight plan as a json file in the data directory
+            self.flight_plans_missing_approval[flight_plan_uuid] = flight_plan
+            self.__save_flight_plan(flight_plan=flight_plan, flight_plan_uuid=flight_plan_uuid)
+
             # -- end of scheduling --
 
             self.sys_log.log_event(models.Event(
@@ -132,14 +144,84 @@ class Scheduling(Plugin):
                 )
             )
 
-            logger.info(f"Flight plan scheduled for approval; flight plan id: {flight_plan_uuid}")
+            logger.warning(f"Flight plan scheduled for approval; flight plan id: {flight_plan_uuid}")
 
             # TODO: return artiifact flight plan id instead of local "flight_plans_missing_approval" flight plan id.
             return {
                 "message": f"Flight plan scheduled for approval", 
                 "fp_id": f"{flight_plan_uuid}"
             }
+          
 
+        @self.api_router.get(
+                '/get/{uuid}',
+                summary="Get a flight plan",
+                description="Get a stored flight plan based on its ID.",
+                response_description="The flight plan",
+                status_code=200,
+                dependencies=[Depends(self.platform_auth.require_login)]
+                )
+        async def get_flight_plan(flight_plan_uuid:str, req: Request) -> FlightPlan:
+            return self.__get_flight_plan(flight_plan_uuid=flight_plan_uuid, user_id=req.state.userid)
+
+        
+
+        # TODO: Go over this again as it may be implemented incorrectly (in relation to logging)
+        @self.api_router.put(
+                '/update/{uuid}',
+                summary="Update a flight plan",
+                description="Update a flight plan that has already been scheduled for approval.",
+                response_description="A message indicating the result of the update",
+                status_code=200,
+                dependencies=[Depends(self.platform_auth.require_login)]
+                )
+        async def update_flight_plan(flight_plan_uuid:str, flight_plan:FlightPlan, req: Request) -> dict[str, str]:
+            user_id = req.state.userid
+
+            # flight_plan_with_datetime = self.__get_flight_plan(flight_plan_uuid=flight_plan_uuid, user_id=user_id)
+
+            # Check if the flight plan exist in the data directory
+            if not os.path.exists(os.path.join(self.data_dir, f'flight_plan_{flight_plan_uuid}.json')):
+                logger.debug(f"Flight plan with uuid '{flight_plan_uuid}' was requested by user '{user_id}' but was not found")
+                raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail='Flight plan not found')
+
+            # LOGGING: User updates flight plan - user action and flight plan artifact
+            flight_plan_as_bytes = io.BytesIO(str(flight_plan).encode('utf-8'))
+            try:
+                artifact_in_id = self.sys_log.create_artifact(flight_plan_as_bytes, filename='detailed_flight_plan.json').sha1
+                logger.info(f"Received updated detailed flight plan with artifact ID: {artifact_in_id}, scheduled for approval")
+            except sqlalchemy.exc.IntegrityError as e: 
+                # Artifact already exists
+                artifact_in_id = e.params[0]
+                logger.info(f"Received existing detailed flight plan with artifact ID: {artifact_in_id}")
+
+            # -- actual update --
+            self.flight_plans_missing_approval[flight_plan_uuid] = flight_plan
+
+            # Save flight plan as a json file in the data directory
+            self.__save_flight_plan(flight_plan=flight_plan, flight_plan_uuid=flight_plan_uuid)
+
+            # -- end of update --
+
+            self.sys_log.log_event(models.Event(
+                descriptor='FlightplanUpdateEvent',
+                relationships=[
+                    models.EventObjectRelationship(
+                        predicate=models.Predicate(descriptor='updatedBy'),
+                        object=models.Entity(type=models.EntityType.user, id=user_id)
+                        ),
+                    models.EventObjectRelationship(
+                        predicate=models.Predicate(descriptor='created'),
+                        object=models.Artifact(sha1=artifact_in_id)
+                        )
+                    ]
+                )
+            )
+
+            logger.info(f"Flight plan updated; flight plan id: {flight_plan_uuid}")
+
+            return {"message": "Flight plan updated"}
+            
 
         @self.api_router.post(
                 '/approve/{uuid}', 
@@ -172,14 +254,16 @@ If the flight plan is approved, a message will first return to the sender acknow
             #     (str) or (list(str)): An exception message or a message indicating the result of the approval
             # """
             user_id = request.state.userid
-            flight_plan_uuid = UUID(flight_plan_uuid)
-            flight_plan_with_datetime:FlightPlan = self.flight_plans_missing_approval.get(flight_plan_uuid)
-            if flight_plan_with_datetime is None:
+            # flight_plan_uuid = UUID(flight_plan_uuid) # TODO: Not sure if it is a version thing, but a string con not be converted to a UUID directly atm. (python version 3.11.9)
+            local_flight_plan_with_datetime:FlightPlan = self.flight_plans_missing_approval.get(flight_plan_uuid)
+            if local_flight_plan_with_datetime is None:
                 logger.debug(f"Flight plan with uuid '{flight_plan_uuid}' was requested by user '{user_id}' but was not found")
-                raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail='Flight plan not found')
+                raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail='Flight plan not found or not scheduled for approval')
+            
+            flight_plan_with_datetime:FlightPlan = self.__get_flight_plan(flight_plan_uuid=flight_plan_uuid, user_id=user_id)
             
             # LOGGING: User approves flight plan - user action and flight plan artifact, compiled flight plan artifact, GS id
-            flight_plan_gs_id = UUID(flight_plan_with_datetime.gs_id)
+            # flight_plan_gs_id = UUID(flight_plan_with_datetime.gs_id)
             
             if not approved:
                 logger.debug(f"Flight plan with uuid '{flight_plan_uuid}' was not approved by user: {user_id}")
@@ -275,7 +359,42 @@ If the flight plan is approved, a message will first return to the sender acknow
 
         return await self.gs_connector.send_control(gs_id, frame)
 
+    def __save_flight_plan(self, flight_plan:FlightPlan, flight_plan_uuid:str):
+        """Save a flight plan as JSON to the data directory
 
+        Args:
+            flight_plan (FlightPlan): The flight plan to save
+        """
+        _path = os.path.join(self.data_dir, f'flight_plan_{flight_plan_uuid}.json')
+        with open(_path, 'w', encoding='utf-8') as file:
+            file.write(str(flight_plan.model_dump_json()))
+        pass
+
+        logger.info(f"Flight plan saved as json file at: {_path}")
+
+    def __get_flight_plan(self, flight_plan_uuid:str, user_id:str) -> FlightPlan | None:
+        """Get a flight plan based on its ID
+
+        Args:
+            flight_plan_uuid (str): The ID of the flight plan
+
+        Returns:
+            FlightPlan: The flight plan
+        """
+        _path = os.path.join(self.data_dir, f'flight_plan_{flight_plan_uuid}.json')
+        flight_plan_with_datetime = None
+
+        if os.path.exists(_path):
+            with open(_path, 'r', encoding='utf-8') as file:
+                flight_plan_with_datetime = FlightPlan.model_validate_json(file.read())
+
+        if flight_plan_with_datetime is None:
+            logger.debug(f"Flight plan with uuid '{flight_plan_uuid}' was requested by user '{user_id}' but was not found")
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail='Flight plan not found')
+            
+        logger.info(f"Flight plan with uuid '{flight_plan_uuid}' was requested by user '{user_id}' and was found")
+        logger.debug(f"Found flight plan with ID: '{flight_plan_uuid}': \n{flight_plan_with_datetime}")
+        return flight_plan_with_datetime
     
     def startup(self):
         """Startup protocol for the plugin
