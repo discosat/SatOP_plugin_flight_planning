@@ -5,11 +5,13 @@ from fastapi import APIRouter, Depends, Request, HTTPException, status, Backgrou
 import logging
 
 import sqlalchemy
+import sqlite3
 
 from satop_platform.components.syslog import models
 from satop_platform.plugin_engine.plugin import Plugin
 from satop_platform.components.groundstation.connector import GroundstationConnector, GroundstationRegistrationItem, FramedContent
 from satop_platform.components.restapi import exceptions
+# from storageDatabase import StorageDatabase
 
 import uuid
 from uuid import UUID
@@ -105,7 +107,9 @@ class Scheduling(Plugin):
 
             flight_plan_as_bytes = io.BytesIO(str(flight_plan).encode('utf-8'))
             try:
-                artifact_in_id = self.sys_log.create_artifact(flight_plan_as_bytes, filename='detailed_flight_plan.json').sha1
+                # UUID based on the content of flight_plan_as_bytes
+                artifact_in_id = flight_plan.gs_id # TODO: This is not correct, but I am not sure how to do it correctly atm.
+                # artifact_in_id = self.sys_log.create_artifact(flight_plan_as_bytes, filename='detailed_flight_plan.json').sha1
                 logger.info(f"Received new detailed flight plan with artifact ID: {artifact_in_id}, scheduled for approval")
             except sqlalchemy.exc.IntegrityError as e: 
                 # Artifact already exists
@@ -114,35 +118,29 @@ class Scheduling(Plugin):
 
             # -- actual scheduling --
             
-            # flight_plan_uuid1 = uuid.uuid4()
-            # print(f"flight_plan_uuid1: {flight_plan_uuid1}")
-            # print(f"artifact_in_id: {artifact_in_id}")
-
-            # # flight_plan_uuid = UUID()
             flight_plan_uuid = artifact_in_id
-            # print(f"flight_plan_uuid: {flight_plan_uuid}")
-            # print(f"flight_plan_id == artifact_in_id: {flight_plan_uuid == flight_plan_uuid}")
-            
+    
             # Save flight plan as a json file in the data directory
             self.flight_plans_missing_approval[flight_plan_uuid] = flight_plan
-            self.__save_flight_plan(flight_plan=flight_plan, flight_plan_uuid=flight_plan_uuid)
+            await self.__save_flight_plan(flight_plan=flight_plan, flight_plan_uuid=flight_plan_uuid)
 
             # -- end of scheduling --
 
-            self.sys_log.log_event(models.Event(
-                descriptor='FlightplanSaveEvent',
-                relationships=[
-                    models.EventObjectRelationship(
-                        predicate=models.Predicate(descriptor='startedBy'),
-                        object=models.Entity(type=models.EntityType.user, id=req.state.userid)
-                        ),
-                    models.EventObjectRelationship(
-                        predicate=models.Predicate(descriptor='created'),
-                        object=models.Artifact(sha1=artifact_in_id)
-                        )
-                    ]
-                )
-            )
+            # TODO: This doesn't work after platform refactor!
+            # self.sys_log.log_event(models.Event(
+            #     descriptor='FlightplanSaveEvent',
+            #     relationships=[
+            #         models.EventObjectRelationship(
+            #             predicate=models.Predicate(descriptor='startedBy'),
+            #             object=models.Entity(type=models.EntityType.user, id=req.state.userid)
+            #             ),
+            #         models.EventObjectRelationship(
+            #             predicate=models.Predicate(descriptor='created'),
+            #             object=models.Artifact(sha1=artifact_in_id)
+            #             )
+            #         ]
+            #     )
+            # )
 
             logger.warning(f"Flight plan scheduled for approval; flight plan id: {flight_plan_uuid}")
 
@@ -188,7 +186,8 @@ class Scheduling(Plugin):
             # LOGGING: User updates flight plan - user action and flight plan artifact
             flight_plan_as_bytes = io.BytesIO(str(flight_plan).encode('utf-8'))
             try:
-                artifact_in_id = self.sys_log.create_artifact(flight_plan_as_bytes, filename='detailed_flight_plan.json').sha1
+                artifact_in_id = flight_plan.gs_id # TODO: This is not correct, but I am not sure how to do it correctly atm.
+                # artifact_in_id = self.sys_log.create_artifact(flight_plan_as_bytes, filename='detailed_flight_plan.json').sha1
                 logger.info(f"Received updated detailed flight plan with artifact ID: {artifact_in_id}, scheduled for approval")
             except sqlalchemy.exc.IntegrityError as e: 
                 # Artifact already exists
@@ -203,20 +202,21 @@ class Scheduling(Plugin):
 
             # -- end of update --
 
-            self.sys_log.log_event(models.Event(
-                descriptor='FlightplanUpdateEvent',
-                relationships=[
-                    models.EventObjectRelationship(
-                        predicate=models.Predicate(descriptor='updatedBy'),
-                        object=models.Entity(type=models.EntityType.user, id=user_id)
-                        ),
-                    models.EventObjectRelationship(
-                        predicate=models.Predicate(descriptor='created'),
-                        object=models.Artifact(sha1=artifact_in_id)
-                        )
-                    ]
-                )
-            )
+            # TODO: This doesn't work after platform refactor!
+            # self.sys_log.log_event(models.Event(
+            #     descriptor='FlightplanUpdateEvent',
+            #     relationships=[
+            #         models.EventObjectRelationship(
+            #             predicate=models.Predicate(descriptor='updatedBy'),
+            #             object=models.Entity(type=models.EntityType.user, id=user_id)
+            #             ),
+            #         models.EventObjectRelationship(
+            #             predicate=models.Predicate(descriptor='created'),
+            #             object=models.Artifact(sha1=artifact_in_id)
+            #             )
+            #         ]
+            #     )
+            # )
 
             logger.info(f"Flight plan updated; flight plan id: {flight_plan_uuid}")
 
@@ -305,24 +305,25 @@ If the flight plan is approved, a message will first return to the sender acknow
         logger.debug(f"GS response: {gs_rtn_msg}")
 
 
-        self.sys_log.log_event(models.Event(
-            descriptor='ApprovedForSendOffEvent',
-            relationships=[
-                models.EventObjectRelationship(
-                    predicate=models.Predicate(descriptor='sentBy'),
-                    object=models.Entity(type=models.EntityType.user, id=user_id)
-                    ),
-                models.EventObjectRelationship(
-                    predicate=models.Predicate(descriptor='used'),
-                    object=models.Artifact(sha1=artifact_id)
-                    ),
-                models.EventObjectRelationship(
-                    predicate=models.Predicate(descriptor='sentTo'),
-                    object=models.Entity(type='system',id=str(flight_plan_gs_id))
-                    )
-                ]
-            )
-        )
+        # TODO: This doesn't work after platform refactor!
+        # self.sys_log.log_event(models.Event(
+        #     descriptor='ApprovedForSendOffEvent',
+        #     relationships=[
+        #         models.EventObjectRelationship(
+        #             predicate=models.Predicate(descriptor='sentBy'),
+        #             object=models.Entity(type=models.EntityType.user, id=user_id)
+        #             ),
+        #         models.EventObjectRelationship(
+        #             predicate=models.Predicate(descriptor='used'),
+        #             object=models.Artifact(sha1=artifact_id)
+        #             ),
+        #         models.EventObjectRelationship(
+        #             predicate=models.Predicate(descriptor='sentTo'),
+        #             object=models.Entity(type='system',id=str(flight_plan_gs_id))
+        #             )
+        #         ]
+        #     )
+        # )
     
     # TODO: If artifact_id is not used, remove it from the function signature
     async def send_to_gs(self, artifact_id:str, compiled_plan:dict, gs_id:UUID, datetime:str, satellite:str):
@@ -359,18 +360,67 @@ If the flight plan is approved, a message will first return to the sender acknow
 
         return await self.gs_connector.send_control(gs_id, frame)
 
-    def __save_flight_plan(self, flight_plan:FlightPlan, flight_plan_uuid:str):
+    async def __get_connection(self) -> sqlite3.Connection:
+        """Get a connection to the database
+
+        Returns:
+            sqlite3.Connection: The connection to the database
+        """
+        _path = os.path.join(self.data_dir, f'DISCO_FP_DB.db')
+        conn = sqlite3.connect(_path)
+        return conn
+
+    async def __save_flight_plan(self, flight_plan:FlightPlan, flight_plan_uuid:str):
         """Save a flight plan as JSON to the data directory
 
         Args:
             flight_plan (FlightPlan): The flight plan to save
         """
-        _path = os.path.join(self.data_dir, f'flight_plan_{flight_plan_uuid}.json')
-        with open(_path, 'w', encoding='utf-8') as file:
-            file.write(str(flight_plan.model_dump_json()))
-        pass
 
-        logger.info(f"Flight plan saved as json file at: {_path}")
+        conn = await self.__get_connection()
+        if conn:
+            print("Connection to the PostgreSQL established successfully.")
+
+            c = conn.cursor()
+
+            c.execute("""
+                      CREATE TABLE IF NOT EXISTS flight_plans (
+                        id TEXT PRIMARY KEY, 
+                        flight_plan TEXT, 
+                        datetime TEXT, 
+                        gs_id TEXT, 
+                        sat_name TEXT
+                      )
+                      """)
+            if not c.execute(f"SELECT * FROM flight_plans WHERE id = '{flight_plan_uuid}'").fetchone():
+                c.execute("""
+                        INSERT INTO flight_plans (id, flight_plan, datetime, gs_id, sat_name) 
+                        VALUES (?, ?, ?, ?, ?)
+                        """
+                        , (flight_plan_uuid, str(flight_plan.flight_plan), flight_plan.datetime, flight_plan.gs_id, flight_plan.sat_name)
+                        )
+            else:
+                c.execute("""
+                        UPDATE flight_plans 
+                        SET flight_plan = ?, datetime = ?, gs_id = ?, sat_name = ?
+                        WHERE id = ?
+                        """
+                        , (str(flight_plan.flight_plan), flight_plan.datetime, flight_plan.gs_id, flight_plan.sat_name, flight_plan_uuid)
+                        )
+            conn.commit()
+
+            self.logger.debug(f'testing db: {c.execute("SELECT * FROM flight_plans").fetchall()}')
+            conn.close()
+        else:
+            print("Connection to the PostgreSQL encountered and error.")
+            
+        # _path = os.path.join(self.data_dir, f'flight_plan_{flight_plan_uuid}.json')
+        # with open(_path, 'w', encoding='utf-8') as file:
+        #     file.write(str(flight_plan.model_dump_json()))
+        # pass
+
+        logger.info(f"Flight plan saved as to the data directory with ID: '{flight_plan_uuid}'")
+        # logger.debug(f"Saved flight plan with ID: '{flight_plan_uuid}': \n{flight_plan}")
 
     def __get_flight_plan(self, flight_plan_uuid:str, user_id:str) -> FlightPlan | None:
         """Get a flight plan based on its ID
