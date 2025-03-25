@@ -160,7 +160,7 @@ class Scheduling(Plugin):
                 dependencies=[Depends(self.platform_auth.require_login)]
                 )
         async def get_flight_plan(flight_plan_uuid:str, req: Request) -> FlightPlan:
-            return self.__get_flight_plan(flight_plan_uuid=flight_plan_uuid, user_id=req.state.userid)
+            return await self.__get_flight_plan(flight_plan_uuid=flight_plan_uuid, user_id=req.state.userid)
 
         
 
@@ -176,7 +176,7 @@ class Scheduling(Plugin):
         async def update_flight_plan(flight_plan_uuid:str, flight_plan:FlightPlan, req: Request) -> dict[str, str]:
             user_id = req.state.userid
 
-            # flight_plan_with_datetime = self.__get_flight_plan(flight_plan_uuid=flight_plan_uuid, user_id=user_id)
+            # flight_plan_with_datetime = await self.__get_flight_plan(flight_plan_uuid=flight_plan_uuid, user_id=user_id)
 
             # Check if the flight plan exist in the data directory
             if not os.path.exists(os.path.join(self.data_dir, f'flight_plan_{flight_plan_uuid}.json')):
@@ -260,7 +260,7 @@ If the flight plan is approved, a message will first return to the sender acknow
                 logger.debug(f"Flight plan with uuid '{flight_plan_uuid}' was requested by user '{user_id}' but was not found")
                 raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail='Flight plan not found or not scheduled for approval')
             
-            flight_plan_with_datetime:FlightPlan = self.__get_flight_plan(flight_plan_uuid=flight_plan_uuid, user_id=user_id)
+            flight_plan_with_datetime:FlightPlan = await self.__get_flight_plan(flight_plan_uuid=flight_plan_uuid, user_id=user_id)
             
             # LOGGING: User approves flight plan - user action and flight plan artifact, compiled flight plan artifact, GS id
             # flight_plan_gs_id = UUID(flight_plan_with_datetime.gs_id)
@@ -422,7 +422,7 @@ If the flight plan is approved, a message will first return to the sender acknow
         logger.info(f"Flight plan saved as to the data directory with ID: '{flight_plan_uuid}'")
         # logger.debug(f"Saved flight plan with ID: '{flight_plan_uuid}': \n{flight_plan}")
 
-    def __get_flight_plan(self, flight_plan_uuid:str, user_id:str) -> FlightPlan | None:
+    async def __get_flight_plan(self, flight_plan_uuid:str, user_id:str) -> FlightPlan | None:
         """Get a flight plan based on its ID
 
         Args:
@@ -431,19 +431,47 @@ If the flight plan is approved, a message will first return to the sender acknow
         Returns:
             FlightPlan: The flight plan
         """
-        _path = os.path.join(self.data_dir, f'flight_plan_{flight_plan_uuid}.json')
-        flight_plan_with_datetime = None
+        
+        conn = await self.__get_connection()
+        if conn:
+            print("Connection to the database established successfully.")
+            c = conn.cursor()
+            flight_plan = c.execute("""
+                                    SELECT * FROM flight_plans WHERE id = ?
+                                    """
+                                    , (flight_plan_uuid,)
+                                    ).fetchone()
 
-        if os.path.exists(_path):
-            with open(_path, 'r', encoding='utf-8') as file:
-                flight_plan_with_datetime = FlightPlan.model_validate_json(file.read())
+            # self.logger.debug(f'testing db: {c.execute("SELECT * FROM flight_plans").fetchall()}')
+            conn.close()
+        else:
+            print("Connection to the database encountered and error.")
 
-        if flight_plan_with_datetime is None:
-            logger.debug(f"Flight plan with uuid '{flight_plan_uuid}' was requested by user '{user_id}' but was not found")
-            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail='Flight plan not found')
+        logger.info(f"User '{user_id}' requested flight plan with ID: '{flight_plan_uuid}'")
+
+        flight_plan_uuid_retrieved = flight_plan[0]
+        flight_plan_with_datetime = FlightPlan(
+            flight_plan=eval(flight_plan[1]),
+            datetime=flight_plan[2],
+            gs_id=flight_plan[3],
+            sat_name=flight_plan[4]
+        )
+        logger.debug(f"Requested flightplan with uuid: '{flight_plan_uuid}'; Retrieved flightplan with uuid: '{flight_plan_uuid_retrieved}'")
+
+        # _path = os.path.join(self.data_dir, f'flight_plan_{flight_plan_uuid}.json')
+        # flight_plan_with_datetime = None
+
+        # if os.path.exists(_path):
+        #     with open(_path, 'r', encoding='utf-8') as file:
+        #         flight_plan_with_datetime = FlightPlan.model_validate_json(file.read())
+
+        # if flight_plan_with_datetime is None:
+        #     logger.debug(f"Flight plan with uuid '{flight_plan_uuid}' was requested by user '{user_id}' but was not found")
+        #     raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail='Flight plan not found')
             
-        logger.info(f"Flight plan with uuid '{flight_plan_uuid}' was requested by user '{user_id}' and was found")
-        logger.debug(f"Found flight plan with ID: '{flight_plan_uuid}': \n{flight_plan_with_datetime}")
+        # logger.info(f"Flight plan with uuid '{flight_plan_uuid}' was requested by user '{user_id}' and was found")
+        # logger.debug(f"Found flight plan with ID: '{flight_plan_uuid}': \n{flight_plan_with_datetime}")
+        # return flight_plan_with_datetime
         return flight_plan_with_datetime
     
     def startup(self):
