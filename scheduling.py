@@ -108,8 +108,7 @@ class Scheduling(Plugin):
             flight_plan_as_bytes = io.BytesIO(str(flight_plan).encode('utf-8'))
             try:
                 # UUID based on the content of flight_plan_as_bytes
-                artifact_in_id = flight_plan.gs_id # TODO: This is not correct, but I am not sure how to do it correctly atm.
-                # artifact_in_id = self.sys_log.create_artifact(flight_plan_as_bytes, filename='detailed_flight_plan.json').sha1
+                artifact_in_id = self.sys_log.create_artifact(flight_plan_as_bytes, filename='detailed_flight_plan.json').sha1
                 logger.info(f"Received new detailed flight plan with artifact ID: {artifact_in_id}, scheduled for approval")
             except sqlalchemy.exc.IntegrityError as e: 
                 # Artifact already exists
@@ -126,21 +125,20 @@ class Scheduling(Plugin):
 
             # -- end of scheduling --
 
-            # TODO: This doesn't work after platform refactor!
-            # self.sys_log.log_event(models.Event(
-            #     descriptor='FlightplanSaveEvent',
-            #     relationships=[
-            #         models.EventObjectRelationship(
-            #             predicate=models.Predicate(descriptor='startedBy'),
-            #             object=models.Entity(type=models.EntityType.user, id=req.state.userid)
-            #             ),
-            #         models.EventObjectRelationship(
-            #             predicate=models.Predicate(descriptor='created'),
-            #             object=models.Artifact(sha1=artifact_in_id)
-            #             )
-            #         ]
-            #     )
-            # )
+            self.sys_log.log_event(models.Event(
+                descriptor='FlightplanSaveEvent',
+                relationships=[
+                    models.EventObjectRelationship(
+                        predicate=models.Predicate(descriptor='startedBy'),
+                        object=models.Entity(type=models.EntityType.user, id=req.state.userid)
+                        ),
+                    models.EventObjectRelationship(
+                        predicate=models.Predicate(descriptor='created'),
+                        object=models.Artifact(sha1=artifact_in_id)
+                        )
+                    ]
+                )
+            )
 
             logger.warning(f"Flight plan scheduled for approval; flight plan id: {flight_plan_uuid}")
 
@@ -186,8 +184,7 @@ class Scheduling(Plugin):
             # LOGGING: User updates flight plan - user action and flight plan artifact
             flight_plan_as_bytes = io.BytesIO(str(flight_plan).encode('utf-8'))
             try:
-                artifact_in_id = flight_plan.gs_id # TODO: This is not correct, but I am not sure how to do it correctly atm.
-                # artifact_in_id = self.sys_log.create_artifact(flight_plan_as_bytes, filename='detailed_flight_plan.json').sha1
+                artifact_in_id = self.sys_log.create_artifact(flight_plan_as_bytes, filename='detailed_flight_plan.json').sha1
                 logger.info(f"Received updated detailed flight plan with artifact ID: {artifact_in_id}, scheduled for approval")
             except sqlalchemy.exc.IntegrityError as e: 
                 # Artifact already exists
@@ -202,21 +199,20 @@ class Scheduling(Plugin):
 
             # -- end of update --
 
-            # TODO: This doesn't work after platform refactor!
-            # self.sys_log.log_event(models.Event(
-            #     descriptor='FlightplanUpdateEvent',
-            #     relationships=[
-            #         models.EventObjectRelationship(
-            #             predicate=models.Predicate(descriptor='updatedBy'),
-            #             object=models.Entity(type=models.EntityType.user, id=user_id)
-            #             ),
-            #         models.EventObjectRelationship(
-            #             predicate=models.Predicate(descriptor='created'),
-            #             object=models.Artifact(sha1=artifact_in_id)
-            #             )
-            #         ]
-            #     )
-            # )
+            self.sys_log.log_event(models.Event(
+                descriptor='FlightplanUpdateEvent',
+                relationships=[
+                    models.EventObjectRelationship(
+                        predicate=models.Predicate(descriptor='updatedBy'),
+                        object=models.Entity(type=models.EntityType.user, id=user_id)
+                        ),
+                    models.EventObjectRelationship(
+                        predicate=models.Predicate(descriptor='created'),
+                        object=models.Artifact(sha1=artifact_in_id)
+                        )
+                    ]
+                )
+            )
 
             logger.info(f"Flight plan updated; flight plan id: {flight_plan_uuid}")
 
@@ -305,25 +301,24 @@ If the flight plan is approved, a message will first return to the sender acknow
         logger.debug(f"GS response: {gs_rtn_msg}")
 
 
-        # TODO: This doesn't work after platform refactor!
-        # self.sys_log.log_event(models.Event(
-        #     descriptor='ApprovedForSendOffEvent',
-        #     relationships=[
-        #         models.EventObjectRelationship(
-        #             predicate=models.Predicate(descriptor='sentBy'),
-        #             object=models.Entity(type=models.EntityType.user, id=user_id)
-        #             ),
-        #         models.EventObjectRelationship(
-        #             predicate=models.Predicate(descriptor='used'),
-        #             object=models.Artifact(sha1=artifact_id)
-        #             ),
-        #         models.EventObjectRelationship(
-        #             predicate=models.Predicate(descriptor='sentTo'),
-        #             object=models.Entity(type='system',id=str(flight_plan_gs_id))
-        #             )
-        #         ]
-        #     )
-        # )
+        self.sys_log.log_event(models.Event(
+            descriptor='ApprovedForSendOffEvent',
+            relationships=[
+                models.EventObjectRelationship(
+                    predicate=models.Predicate(descriptor='sentBy'),
+                    object=models.Entity(type=models.EntityType.user, id=user_id)
+                    ),
+                models.EventObjectRelationship(
+                    predicate=models.Predicate(descriptor='used'),
+                    object=models.Artifact(sha1=artifact_id)
+                    ),
+                models.EventObjectRelationship(
+                    predicate=models.Predicate(descriptor='sentTo'),
+                    object=models.Entity(type='system',id=str(flight_plan_gs_id))
+                    )
+                ]
+            )
+        )
     
     # TODO: If artifact_id is not used, remove it from the function signature
     async def send_to_gs(self, artifact_id:str, compiled_plan:dict, gs_id:UUID, datetime:str, satellite:str):
