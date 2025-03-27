@@ -1,6 +1,5 @@
 import io
 import os
-from pydantic import BaseModel
 from fastapi import APIRouter, Depends, Request, HTTPException, status, BackgroundTasks
 import logging
 
@@ -11,60 +10,14 @@ from satop_platform.components.syslog import models
 from satop_platform.plugin_engine.plugin import Plugin
 from satop_platform.components.groundstation.connector import GroundstationConnector, GroundstationRegistrationItem, FramedContent
 from satop_platform.components.restapi import exceptions
-# from storageDatabase import StorageDatabase
+from .storageDatabase import StorageDatabase
+from .flightPlan import FlightPlan, FlightPlanStatus
 
 import uuid
 from uuid import UUID
 
 logger = logging.getLogger('plugin.scheduling')
 
-class FlightPlan(BaseModel):
-    flight_plan: dict
-    datetime: str
-    gs_id: str
-    sat_name: str
-    
-    model_config = {
-        "json_schema_extra": {
-            "examples": [
-                {
-                    "flight_plan": 
-                    {
-                        "name": "commands",
-                        "body": [
-                            {
-                                "name": "repeat-n",
-                                "count": 10,
-                                "body": [
-                                    {
-                                        "name": "gpio-write",
-                                        "pin": 16,
-                                        "value": 1
-                                    },
-                                    {
-                                        "name": "wait-sec",
-                                        "duration": 1
-                                    },
-                                    {
-                                        "name": "gpio-write",
-                                        "pin": 16,
-                                        "value": 0
-                                    },
-                                    {
-                                        "name": "wait-sec",
-                                        "duration": 1
-                                    }
-                                ]
-                            }
-                        ]
-                    },
-                    "datetime": "2025-01-01T12:12:30+01:00",
-                    "gs_id": "86c8a92b-571a-46cb-b306-e9be71959279",
-                    "sat_name": "DISCO-2"
-                }
-            ]
-        }
-    }
 
 class Scheduling(Plugin):
     def __init__(self, *args, **kwargs):
@@ -79,6 +32,8 @@ class Scheduling(Plugin):
 
         self.data_dir = os.path.join(plugin_dir, 'data')
         os.makedirs(self.data_dir, exist_ok=True)
+
+        self.data_base = None
 
         @self.api_router.post(
                 '/save', 
@@ -121,7 +76,13 @@ class Scheduling(Plugin):
     
             # Save flight plan as a json file in the data directory
             self.flight_plans_missing_approval[flight_plan_uuid] = flight_plan
-            await self.__save_flight_plan(flight_plan=flight_plan, flight_plan_uuid=flight_plan_uuid)
+            save_fp_message: str | None = await self.__save_flight_plan(flight_plan=flight_plan, flight_plan_uuid=flight_plan_uuid, user_id=user_id)
+            save_ap_message: str | None = await self.__save_approval(flight_plan_uuid, user_id)
+            if save_fp_message or save_ap_message:
+                save_message = f"Flight plan not saved: {save_fp_message}; {save_ap_message}"
+                return {
+                "message": save_message
+            }
 
             # -- end of scheduling --
 
@@ -174,10 +135,10 @@ class Scheduling(Plugin):
         async def update_flight_plan(flight_plan_uuid:str, flight_plan:FlightPlan, req: Request) -> dict[str, str]:
             user_id = req.state.userid
 
-            # flight_plan_with_datetime = await self.__get_flight_plan(flight_plan_uuid=flight_plan_uuid, user_id=user_id)
+            flight_plan_with_datetime = await self.__get_flight_plan(flight_plan_uuid=flight_plan_uuid, user_id=user_id)
 
             # Check if the flight plan exist in the data directory
-            if not os.path.exists(os.path.join(self.data_dir, f'flight_plan_{flight_plan_uuid}.json')):
+            if not flight_plan_with_datetime:
                 logger.debug(f"Flight plan with uuid '{flight_plan_uuid}' was requested by user '{user_id}' but was not found")
                 raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail='Flight plan not found')
 
@@ -195,7 +156,7 @@ class Scheduling(Plugin):
             self.flight_plans_missing_approval[flight_plan_uuid] = flight_plan
 
             # Save flight plan as a json file in the data directory
-            self.__save_flight_plan(flight_plan=flight_plan, flight_plan_uuid=flight_plan_uuid)
+            self.__update_flight_plan(flight_plan=flight_plan, flight_plan_uuid=flight_plan_uuid)
 
             # -- end of update --
 
@@ -237,41 +198,59 @@ If the flight plan is approved, a message will first return to the sender acknow
                 dependencies=[Depends(self.platform_auth.require_login)]
                 )
         async def approve_flight_plan(flight_plan_uuid:str, approved:bool, request: Request, background_tasks: BackgroundTasks) -> dict[str, str]: # TODO: maybe require the GS id here instead.
-            # """Approve a flight plan for transmission to a ground station
-
-            # Args:
-            #     flight_plan_uuid (str): Identifier of the flight plan to approve
-            #     approved (bool): Whether the flight plan is approved or not
-                
-            # Raises:
-            #     HTTPException: If the flight plan is not found
-
-            # Returns:
-            #     (str) or (list(str)): An exception message or a message indicating the result of the approval
-            # """
             user_id = request.state.userid
-            # flight_plan_uuid = UUID(flight_plan_uuid) # TODO: Not sure if it is a version thing, but a string con not be converted to a UUID directly atm. (python version 3.11.9)
-            local_flight_plan_with_datetime:FlightPlan = self.flight_plans_missing_approval.get(flight_plan_uuid)
-            if local_flight_plan_with_datetime is None:
+
+            _flightplan_with_datetime: FlightPlan = await self.__get_flight_plan(flight_plan_uuid=flight_plan_uuid, user_id=user_id)
+            _approved_flight_plan: FlightPlanStatus | None = await self.data_base.get_approval_index(flight_plan_uuid=flight_plan_uuid) 
+
+            if not _flightplan_with_datetime:
                 logger.debug(f"Flight plan with uuid '{flight_plan_uuid}' was requested by user '{user_id}' but was not found")
                 raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail='Flight plan not found or not scheduled for approval')
+
+            if not _approved_flight_plan:
+                pass
+            elif _approved_flight_plan.approval_status:
+                logger.debug(f"""Flight plan with uuid '{flight_plan_uuid}' was approved by user: '{user_id}', 
+                             but has already been approved by user: '{_approved_flight_plan.approver}' at datetime: '{_approved_flight_plan.approval_date}'""")
+                return {"message": "Flight plan already approved"}
+                
+
+            # flight_plan_uuid = UUID(flight_plan_uuid) # TODO: Not sure if it is a version thing, but a string con not be converted to a UUID directly atm. (python version 3.11.9)
+            # local_flight_plan_with_datetime:FlightPlan = self.flight_plans_missing_approval.get(flight_plan_uuid)
+            # if local_flight_plan_with_datetime is None:
+            #     logger.debug(f"Flight plan with uuid '{flight_plan_uuid}' was requested by user '{user_id}' but was not found")
+            #     raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail='Flight plan not found or not scheduled for approval')
             
-            flight_plan_with_datetime:FlightPlan = await self.__get_flight_plan(flight_plan_uuid=flight_plan_uuid, user_id=user_id)
+            # flight_plan_with_datetime:FlightPlan = await self.__get_flight_plan(flight_plan_uuid=flight_plan_uuid, user_id=user_id)
             
             # LOGGING: User approves flight plan - user action and flight plan artifact, compiled flight plan artifact, GS id
             # flight_plan_gs_id = UUID(flight_plan_with_datetime.gs_id)
             
+            await self.__update_approval(flight_plan_uuid, user_id, approved)
             if not approved:
                 logger.debug(f"Flight plan with uuid '{flight_plan_uuid}' was not approved by user: {user_id}")
+                self.sys_log.log_event(models.Event(
+                    descriptor='FlightplanApprovalEvent',
+                    relationships=[
+                        models.EventObjectRelationship(
+                            predicate=models.Predicate(descriptor='rejectedBy'),
+                            object=models.Entity(type=models.EntityType.user, id=user_id)
+                            ),
+                        models.EventObjectRelationship(
+                            predicate=models.Predicate(descriptor='rejected'),
+                            object=models.Artifact(sha1=flight_plan_uuid)
+                            )
+                        ]
+                    )
+                )
                 return {"message": "Flight plan not approved by user"}
             logger.debug(f"Flight plan with uuid '{flight_plan_uuid}' was approved by user: {user_id}")
 
             
-            logger.debug(f"found flight plan: {flight_plan_with_datetime}")
+            logger.debug(f"found flight plan: {_flightplan_with_datetime}")
 
             # Compile the flight plan
-            # TODO: compile in seperate thread
-            compiled_plan, artifact_id = await self.call_function("Compiler","compile", flight_plan_with_datetime.flight_plan, user_id)
+            compiled_plan, artifact_id = await self.call_function("Compiler","compile", _flightplan_with_datetime.flight_plan, user_id)
             
             background_tasks.add_task(self._do_send_to_gs, flight_plan_uuid, compiled_plan, artifact_id, user_id)
 
@@ -355,67 +334,96 @@ If the flight plan is approved, a message will first return to the sender acknow
 
         return await self.gs_connector.send_control(gs_id, frame)
 
-    async def __get_connection(self) -> sqlite3.Connection:
-        """Get a connection to the database
 
-        Returns:
-            sqlite3.Connection: The connection to the database
-        """
-        _path = os.path.join(self.data_dir, f'DISCO_FP_DB.db')
-        conn = sqlite3.connect(_path)
-        return conn
-
-    async def __save_flight_plan(self, flight_plan:FlightPlan, flight_plan_uuid:str):
+    async def __save_flight_plan(self, flight_plan:FlightPlan, flight_plan_uuid:str, user_id:str) -> str | None:
         """Save a flight plan as JSON to the data directory
 
         Args:
             flight_plan (FlightPlan): The flight plan to save
         """
-
-        conn = await self.__get_connection()
-        if conn:
-            print("Connection to the PostgreSQL established successfully.")
-
-            c = conn.cursor()
-
-            c.execute("""
-                      CREATE TABLE IF NOT EXISTS flight_plans (
-                        id TEXT PRIMARY KEY, 
-                        flight_plan TEXT, 
-                        datetime TEXT, 
-                        gs_id TEXT, 
-                        sat_name TEXT
-                      )
-                      """)
-            if not c.execute(f"SELECT * FROM flight_plans WHERE id = '{flight_plan_uuid}'").fetchone():
-                c.execute("""
-                        INSERT INTO flight_plans (id, flight_plan, datetime, gs_id, sat_name) 
-                        VALUES (?, ?, ?, ?, ?)
-                        """
-                        , (flight_plan_uuid, str(flight_plan.flight_plan), flight_plan.datetime, flight_plan.gs_id, flight_plan.sat_name)
-                        )
+        _existing_flight_plan: FlightPlan | None = None
+        try:
+            _existing_flight_plan = await self.__get_flight_plan(flight_plan_uuid, user_id=user_id)
+        except HTTPException as e:
+            if e.status_code == status.HTTP_404_NOT_FOUND:
+                pass
             else:
-                c.execute("""
-                        UPDATE flight_plans 
-                        SET flight_plan = ?, datetime = ?, gs_id = ?, sat_name = ?
-                        WHERE id = ?
-                        """
-                        , (str(flight_plan.flight_plan), flight_plan.datetime, flight_plan.gs_id, flight_plan.sat_name, flight_plan_uuid)
-                        )
-            conn.commit()
-
-            self.logger.debug(f'testing db: {c.execute("SELECT * FROM flight_plans").fetchall()}')
-            conn.close()
-        else:
-            print("Connection to the PostgreSQL encountered and error.")
+                raise e
+        
+        try:
+            if _existing_flight_plan:
+                logger.debug(f"Flight plan with ID: '{flight_plan_uuid}' already exists")
+                return "Flight plan already exists"
+                # raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail='Flight plan already exists')
             
-        # _path = os.path.join(self.data_dir, f'flight_plan_{flight_plan_uuid}.json')
-        # with open(_path, 'w', encoding='utf-8') as file:
-        #     file.write(str(flight_plan.model_dump_json()))
-        # pass
+            await self.data_base.save_flight_plan(flight_plan, flight_plan_uuid)
+            logger.debug(f"Saved flight plan with ID: '{flight_plan_uuid}': \n{flight_plan}")
+        except HTTPException as e:
+            raise e
+        except Exception as e:
+            logger.error(f"Failed to save flight plan with ID: '{flight_plan_uuid}': \n{flight_plan}")
+            logger.error(f"Error: {e}")
+            raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail='Failed to save flight plan')
+        
+    async def __save_approval(self, flight_plan_uuid:str, user_id:str) -> str | None:
+        """Save the approval of a flight plan
 
-        logger.info(f"Flight plan saved as to the data directory with ID: '{flight_plan_uuid}'")
-        # logger.debug(f"Saved flight plan with ID: '{flight_plan_uuid}': \n{flight_plan}")
+        Args:
+            flight_plan_uuid (str): The ID of the flight plan
+            user_id (str): The ID of the user
+        """
+        
+        try:
+            if await self.data_base.get_approval_index(flight_plan_uuid):
+                logger.debug(f"Approval index of flight plan with ID: '{flight_plan_uuid}' already exists")
+                return "Approval index already exists"
+                # raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail='Approval already exists')
+
+            await self.data_base.save_approval(flight_plan_uuid, user_id)
+            logger.debug(f"Saved approval of flight plan with ID: '{flight_plan_uuid}', approved by user: '{user_id}'")
+        except Exception as e:
+            logger.error(f"Failed to save approval of flight plan with ID: '{flight_plan_uuid}', approval attempted by user: '{user_id}'")
+            raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail='Failed to save approval')
+
+
+    async def __update_flight_plan(self, flight_plan:FlightPlan, flight_plan_uuid:str) -> None:
+        """Update a flight plan based on its ID
+
+        Args:
+            flight_plan (FlightPlan): The flight plan to update
+            flight_plan_uuid (str): The ID of the flight plan
+        """
+        try:
+            await self.data_base.update_flight_plan(flight_plan, flight_plan_uuid)
+            logger.debug(f"Updated flight plan with ID: '{flight_plan_uuid}': \n{flight_plan}")
+        except Exception as e:
+            logger.error(f"Failed to update flight plan with ID: '{flight_plan_uuid}': \n{flight_plan}")
+            raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail='Failed to update flight plan')
+    
+
+    async def __update_approval(self, flight_plan_uuid:str, user_id:str, approved:bool) -> None:
+        """Update the approval of a flight plan
+
+        Args:
+            flight_plan_uuid (str): The ID of the flight plan
+            user_id (str): The ID of the user
+        """
+        try:
+            
+            _existing_approval: FlightPlanStatus | None = await self.data_base.get_approval_index(flight_plan_uuid)
+            if not _existing_approval.approval_status == None:
+                logger.debug(f"Flight plan with ID: '{flight_plan_uuid}' has already been handled by user: '{_existing_approval.approver}'")
+                raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=f'Flight plan already handled by user {_existing_approval.approver}; it was {"" if _existing_approval.approval_status else "not "}approved')
+
+
+
+            await self.data_base.update_approval(flight_plan_uuid, approved, user_id)
+            logger.debug(f"Updated approval of flight plan with ID: '{flight_plan_uuid}', approved by user: '{user_id}'")
+        except HTTPException as e:
+            raise e
+        except Exception as e:
+            logger.error(f"Failed to update approval of flight plan with ID: '{flight_plan_uuid}', approval attempted by user: '{user_id}'")
+            raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail='Failed to update approval')
 
     async def __get_flight_plan(self, flight_plan_uuid:str, user_id:str) -> FlightPlan | None:
         """Get a flight plan based on its ID
@@ -426,57 +434,43 @@ If the flight plan is approved, a message will first return to the sender acknow
         Returns:
             FlightPlan: The flight plan
         """
-        
-        conn = await self.__get_connection()
-        if conn:
-            print("Connection to the database established successfully.")
-            c = conn.cursor()
-            flight_plan = c.execute("""
-                                    SELECT * FROM flight_plans WHERE id = ?
-                                    """
-                                    , (flight_plan_uuid,)
-                                    ).fetchone()
-
-            # self.logger.debug(f'testing db: {c.execute("SELECT * FROM flight_plans").fetchall()}')
-            conn.close()
-        else:
-            print("Connection to the database encountered and error.")
-
-        logger.info(f"User '{user_id}' requested flight plan with ID: '{flight_plan_uuid}'")
-
-        flight_plan_uuid_retrieved = flight_plan[0]
-        flight_plan_with_datetime = FlightPlan(
-            flight_plan=eval(flight_plan[1]),
-            datetime=flight_plan[2],
-            gs_id=flight_plan[3],
-            sat_name=flight_plan[4]
-        )
-        logger.debug(f"Requested flightplan with uuid: '{flight_plan_uuid}'; Retrieved flightplan with uuid: '{flight_plan_uuid_retrieved}'")
-
-        # _path = os.path.join(self.data_dir, f'flight_plan_{flight_plan_uuid}.json')
-        # flight_plan_with_datetime = None
-
-        # if os.path.exists(_path):
-        #     with open(_path, 'r', encoding='utf-8') as file:
-        #         flight_plan_with_datetime = FlightPlan.model_validate_json(file.read())
-
-        # if flight_plan_with_datetime is None:
-        #     logger.debug(f"Flight plan with uuid '{flight_plan_uuid}' was requested by user '{user_id}' but was not found")
-        #     raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail='Flight plan not found')
+        try:
+            _existing_flight_plan: FlightPlan | None = await self.data_base.get_flight_plan(flight_plan_uuid)
+            if not _existing_flight_plan:
+                logger.debug(f"Flight plan with ID: '{flight_plan_uuid}' not found")
+                raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail='Flight plan not found')
             
-        # logger.info(f"Flight plan with uuid '{flight_plan_uuid}' was requested by user '{user_id}' and was found")
-        # logger.debug(f"Found flight plan with ID: '{flight_plan_uuid}': \n{flight_plan_with_datetime}")
-        # return flight_plan_with_datetime
-        return flight_plan_with_datetime
+            logger.debug(f"User '{user_id}' requested flightplan with uuid: '{flight_plan_uuid}'; Retrieved flightplan with uuid: '{flight_plan_uuid}'")
+            return _existing_flight_plan
+        except HTTPException as e:
+            logger.error(f"Failed to get flight plan with ID: '{flight_plan_uuid}'")
+            raise e
+        except Exception as e:
+            logger.error(f"Failed to get flight plan with ID: '{flight_plan_uuid}'")
+            raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail='Failed to get flight plan')
+        
     
     def startup(self):
         """Startup protocol for the plugin
         """
         super().startup()
         logger.info(f"Running '{self.name}' statup protocol")
+
+        # TODO: Implement database connection test without using the plugin engine OR add await everywhere (This needs more thought) ... Maybe a seperate process or thread can be used.
+        # logger.debug(f"Testing database connection")
+        # database_tester = StorageDatabase(self.data_dir)
+        # database_tester.__test_database(logger=logger)
+        # logger.debug(f"Database connection test passed")
+        
+        self.data_base = StorageDatabase(self.data_dir)
     
     def shutdown(self):
         """Shutdown protocol for the plugin
         """
         super().shutdown()
         logger.info(f"'{self.name}' Shutting down gracefully")
+        try:
+            self.data_base.close_connection()
+        except Exception as e:
+            logger.error(f"Failed to close database connection: {e}")
+            raise e
