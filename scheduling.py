@@ -28,7 +28,6 @@ class Scheduling(Plugin):
             raise RuntimeError
 
         self.api_router = APIRouter()
-        self.flight_plans_missing_approval: dict[UUID, dict] = dict()
 
         self.data_dir = os.path.join(plugin_dir, 'data')
         os.makedirs(self.data_dir, exist_ok=True)
@@ -75,7 +74,6 @@ class Scheduling(Plugin):
             flight_plan_uuid = artifact_in_id
     
             # Save flight plan as a json file in the data directory
-            self.flight_plans_missing_approval[flight_plan_uuid] = flight_plan
             save_fp_message: str | None = await self.__save_flight_plan(flight_plan=flight_plan, flight_plan_uuid=flight_plan_uuid, user_id=user_id)
             save_ap_message: str | None = await self.__save_approval(flight_plan_uuid, user_id)
             if save_fp_message or save_ap_message:
@@ -103,7 +101,6 @@ class Scheduling(Plugin):
 
             logger.warning(f"Flight plan scheduled for approval; flight plan id: {flight_plan_uuid}")
 
-            # TODO: return artiifact flight plan id instead of local "flight_plans_missing_approval" flight plan id.
             return {
                 "message": f"Flight plan scheduled for approval", 
                 "fp_id": f"{flight_plan_uuid}"
@@ -153,7 +150,6 @@ class Scheduling(Plugin):
                 logger.info(f"Received existing detailed flight plan with artifact ID: {artifact_in_id}")
 
             # -- actual update --
-            self.flight_plans_missing_approval[flight_plan_uuid] = flight_plan
 
             # Save flight plan as a json file in the data directory
             self.__update_flight_plan(flight_plan=flight_plan, flight_plan_uuid=flight_plan_uuid)
@@ -267,7 +263,12 @@ If the flight plan is approved, a message will first return to the sender acknow
         """
         # Send the compiled plan to the GS client
         logger.debug(f"\nsending compiled plan to GS: \n{compiled_plan}\n")
-        flight_plan_with_datetime:FlightPlan = self.flight_plans_missing_approval.pop(flight_plan_uuid)
+
+        flight_plan_with_datetime = await self.__get_flight_plan(flight_plan_uuid, user_id)
+        if not flight_plan_with_datetime:
+            logger.error(f"Flight plan with ID: '{flight_plan_uuid}' not found")
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail='Flight plan not found')
+
         flight_plan_gs_id = UUID(flight_plan_with_datetime.gs_id)
 
         gs_rtn_msg = await self.send_to_gs(
@@ -387,18 +388,21 @@ If the flight plan is approved, a message will first return to the sender acknow
 
 
     async def __update_flight_plan(self, flight_plan:FlightPlan, flight_plan_uuid:str) -> None:
-        """Update a flight plan based on its ID
+        # """Update a flight plan based on its ID
 
-        Args:
-            flight_plan (FlightPlan): The flight plan to update
-            flight_plan_uuid (str): The ID of the flight plan
-        """
-        try:
-            await self.data_base.update_flight_plan(flight_plan, flight_plan_uuid)
-            logger.debug(f"Updated flight plan with ID: '{flight_plan_uuid}': \n{flight_plan}")
-        except Exception as e:
-            logger.error(f"Failed to update flight plan with ID: '{flight_plan_uuid}': \n{flight_plan}")
-            raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail='Failed to update flight plan')
+        # Args:
+        #     flight_plan (FlightPlan): The flight plan to update
+        #     flight_plan_uuid (str): The ID of the flight plan
+        # """
+        # try:
+        #     await self.data_base.update_flight_plan(flight_plan, flight_plan_uuid)
+        #     logger.debug(f"Updated flight plan with ID: '{flight_plan_uuid}': \n{flight_plan}")
+        # except Exception as e:
+        #     logger.error(f"Failed to update flight plan with ID: '{flight_plan_uuid}': \n{flight_plan}")
+        #     raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail='Failed to update flight plan')
+        
+        # TODO: Rethink how updates should occur (if a flight_plan is updated, a new one should be created and the old one should be marked as outdated or deleted instead... "Updating" is misleading as a new ID should be created every time a flight plan changes) 
+        raise NotImplementedError
     
 
     async def __update_approval(self, flight_plan_uuid:str, user_id:str, approved:bool) -> None:
