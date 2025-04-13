@@ -29,8 +29,8 @@ class StorageDatabase:
     def close_connection(self) -> bool:
         """Close the connection to the database"
         """
-        if not self.connection:
-            raise ValueError("Connection to the database is not open")
+        # Ensure the connection is open
+        self.__check_connection()
 
         self.connection.close()
         return True
@@ -57,7 +57,10 @@ class StorageDatabase:
             flight_plan (FlightPlan): The flight plan to be stored in the database
             flight_plan_uuid (str): The UUID of the flight plan
         """
+        # Ensure the connection is open
+        self.__check_connection()
 
+        # Create a cursor and execute the query
         c = self.connection.cursor()
         c.execute("""
                     CREATE TABLE IF NOT EXISTS flight_plans (
@@ -74,6 +77,10 @@ class StorageDatabase:
     def create_approval_table(self) -> None:
         """Create the approval table in the database
         """
+        # Ensure the connection is open
+        self.__check_connection()
+
+        # Create a cursor and execute the query
         c = self.connection.cursor()
         c.execute("""
                     CREATE TABLE IF NOT EXISTS approval (
@@ -96,14 +103,11 @@ class StorageDatabase:
         Returns:
             FlightPlan: The flight plan
         """
-        # Ensure the connection is open
-        if not self.connection:
-            raise ValueError("Connection to the database is not open")
-        
-        # Ensure the flight_plans table exists
-        if not await self.check_table_exists('flight_plans'):
-            raise ValueError("Table flight_plans does not exist")
+        # Ensure the connection is open and the flight_plans table exists
+        self.__check_connection()
+        self.__check_table_exists('flight_plans')
 
+        # Create a cursor and execute the query
         c = self.connection.cursor()
         c.execute(f"SELECT * FROM flight_plans WHERE id = '{flight_plan_uuid}'")
         flight_plan = c.fetchone()
@@ -117,6 +121,29 @@ class StorageDatabase:
                 sat_name=flight_plan[4]
             )
         return None  
+
+    # TODO: Needs testing
+    async def get_all_flight_plans(self) -> list[FlightPlan]:
+        """Get all flight plans from the database
+
+        Returns:
+            list[FlightPlan]: A list of flight plans
+        """
+        # Ensure the connection is open and the flight_plans table exists
+        self.__check_connection()
+        self.__check_table_exists('flight_plans')
+
+        # Create a cursor and execute the query
+        c = self.connection.cursor()
+        c.execute("SELECT * FROM flight_plans")
+        flight_plans = c.fetchall()
+
+        return [FlightPlan(
+            flight_plan=ast.literal_eval(flight_plan[1]),
+            datetime=flight_plan[2],
+            gs_id=flight_plan[3],
+            sat_name=flight_plan[4]
+        ) for flight_plan in flight_plans]
     
     # TODO: Needs testing
     async def get_approval_index(self, flight_plan_uuid: str) -> FlightPlanStatus:
@@ -128,9 +155,11 @@ class StorageDatabase:
         Returns:
             : The approval index of the flight plan
         """
-        if not self.connection:
-            raise ValueError("Connection to the database is not open")
+        # Ensure the connection is open and the flight_plans table exists
+        self.__check_connection()
+        self.__check_table_exists('approval')
 
+        # Create a cursor and execute the query
         c = self.connection.cursor()
         c.execute(f"SELECT * FROM approval WHERE id = '{flight_plan_uuid}'")
         approval = c.fetchone()
@@ -157,9 +186,11 @@ class StorageDatabase:
         Returns:
             bool: The approval status of the flight plan
         """
-        if not self.connection:
-            raise ValueError("Connection to the database is not open")
+        # Ensure the connection is open and the flight_plans table exists
+        self.__check_connection()
+        self.__check_table_exists('approval')
 
+        # Create a cursor and execute the query
         c = self.connection.cursor()
         c.execute(f"SELECT approval FROM approval WHERE id = '{flight_plan_uuid}'")
         approval = c.fetchone()
@@ -169,16 +200,12 @@ class StorageDatabase:
     
     # TODO: Needs testing
     async def save_flight_plan(self, flight_plan: FlightPlan, flight_plan_uuid: str) -> None:
+        # Ensure the connection is open and the flight_plans table exists
+        self.__check_connection()
+        self.__check_table_exists('flight_plans')
 
-        if not self.connection:
-            raise ValueError("Connection to the database is not open")
-        
-        if not await self.check_table_exists('flight_plans'):
-            raise ValueError("Table flight_plans does not exist")
-
+        # Create a cursor and execute the query
         c = self.connection.cursor()
-
-    
         c.execute("""
                 INSERT INTO flight_plans (id, flight_plan, datetime, gs_id, sat_name) 
                 VALUES (?, ?, ?, ?, ?)
@@ -190,14 +217,12 @@ class StorageDatabase:
 
     # TODO: Needs testing
     async def update_flight_plan(self, flight_plan: FlightPlan, flight_plan_uuid: str) -> None:
-        if not self.connection:
-            raise ValueError("Connection to the database is not open")
-        
-        if not await self.check_table_exists('flight_plans'):
-            raise ValueError("Table flight_plans does not exist")
+        # Ensure the connection is open and the flight_plans table exists
+        self.__check_connection()
+        self.__check_table_exists('flight_plans')
 
+        # Create a cursor and execute the query
         c = self.connection.cursor()
-        
         c.execute("""
                 UPDATE flight_plans
                 SET flight_plan = ?,
@@ -213,12 +238,11 @@ class StorageDatabase:
 
     # TODO: Needs testing
     async def save_approval(self, flight_plan_uuid: str, user_id: str, approval: bool = None) -> None:
-        if not self.connection:
-            raise ValueError("Connection to the database is not open")
-        
-        if not await self.check_table_exists('approval'):
-            raise ValueError("Table approval does not exist")
+        # Ensure the connection is open and the approval table exists
+        self.__check_connection()
+        self.__check_table_exists('approval')
 
+        # Create a cursor and execute the query
         c = self.connection.cursor()
 
         c.execute("""
@@ -232,12 +256,11 @@ class StorageDatabase:
 
     # TODO: Needs testing
     async def update_approval(self, flight_plan_uuid: str, approval: bool, user_id:str) -> None:
-        if not self.connection:
-            raise ValueError("Connection to the database is not open")
-        
-        if not await self.check_table_exists('approval'):
-            raise ValueError("Table approval does not exist")
+        # Ensure the connection is open and the approval table exists
+        self.__check_connection()
+        self.__check_table_exists('approval')
 
+        # Create a cursor and execute the query
         c = self.connection.cursor()
         approval_time = datetime.now().isoformat()
         c.execute("""
@@ -253,7 +276,30 @@ class StorageDatabase:
         self.connection.commit()
 
 
+    def __check_connection(self) -> None:
+        """Check if the connection to the database is open
+            
+        Raises:
+            ValueError: If the connection to the database is not open
+        """
+        if not self.connection:
+            raise ValueError("Connection to the database is not open")
+        
+    def __check_table_exists(self, table_name: str) -> None:
+        """Check if a table exists in the database
 
+        Args:
+            table_name (str): The name of the table
+
+        Raises:
+            ValueError: If the table does not exist
+        """
+        self.__check_connection()
+
+        c = self.connection.cursor()
+        c.execute(f"SELECT name FROM sqlite_master WHERE type='table' AND name='{table_name}'")
+        if c.fetchone() is None:
+            raise ValueError(f"Table {table_name} does not exist")
 
 
 

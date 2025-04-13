@@ -117,6 +117,24 @@ class Scheduling(Plugin):
                 )
         async def get_flight_plan(flight_plan_uuid:str, req: Request) -> FlightPlan:
             return await self.__get_flight_plan(flight_plan_uuid=flight_plan_uuid, user_id=req.state.userid)
+        
+        @self.api_router.getall(
+                '/get_all',
+                summary="Get all flight plans",
+                description="Get all stored flight plans.",
+                response_description="A list of flight plans",
+                status_code=200,
+                dependencies=[Depends(self.platform_auth.require_login)]
+                )
+        async def get_all_flight_plans(req: Request) -> list[FlightPlan]:
+            user_id = req.state.userid
+            flight_plans = await self.data_base.get_all_flight_plans()
+            if not flight_plans:
+                logger.debug(f"User '{user_id}' requested all flight plans but none were found")
+                raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail='No flight plans found')
+            
+            logger.debug(f"User '{user_id}' requested all flight plans; Retrieved {len(flight_plans)} flight plans")
+            return flight_plans
 
         
 
