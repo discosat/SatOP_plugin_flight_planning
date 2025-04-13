@@ -118,7 +118,7 @@ class Scheduling(Plugin):
         async def get_flight_plan(flight_plan_uuid:str, req: Request) -> FlightPlan:
             return await self.__get_flight_plan(flight_plan_uuid=flight_plan_uuid, user_id=req.state.userid)
         
-        @self.api_router.getall(
+        @self.api_router.get(
                 '/get_all',
                 summary="Get all flight plans",
                 description="Get all stored flight plans.",
